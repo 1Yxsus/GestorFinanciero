@@ -1,0 +1,213 @@
+@import "tailwindcss";
+
+/* Habilitar variante dark por clase (.dark) en Tailwind CSS v4 */
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme {
+  --font-display: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-mono-num: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-sans: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+
+  --color-obsidian-950: #070709;
+  --color-obsidian-900: #0b0b0e;
+  --color-obsidian-850: #121217;
+  --color-obsidian-800: #181822;
+  --color-obsidian-700: #262636;
+  --color-obsidian-600: #38384e;
+
+  --color-neon-green: #00ff87;
+  --color-neon-emerald: #10b981;
+  --color-neon-rose: #ff2e93;
+  --color-neon-coral: #ff4365;
+  --color-neon-cyan: #00f0ff;
+  --color-neon-gold: #ffd000;
+
+  --color-parchment-50: #faf7f2;
+  --color-parchment-100: #f3ede2;
+  --color-parchment-200: #e8ded0;
+  --color-ink-950: #121217;
+  --color-ink-900: #1c1c24;
+  --color-ink-700: #333342;
+  --color-ink-500: #646477;
+
+  --color-forest-green: #087f48;
+  --color-crimson-red: #d9183b;
+  --color-cobalt-blue: #1d4ed8;
+
+  --color-text-main: var(--text-main);
+  --color-text-muted: var(--text-muted);
+}
+
+/* Base Styles & Dynamic Variables */
+:root {
+  --bg-primary: #0b0b0e;
+  --bg-card: #121217;
+  --bg-card-secondary: #181822;
+  --border-color: rgba(255, 255, 255, 0.12);
+  --border-strong: rgba(255, 255, 255, 0.22);
+  --text-main: #f5f5f7;
+  --text-muted: #9a9ab0;
+  --card-shadow: 0 10px 30px -5px rgba(0, 0, 0, 0.5), 0 0 1px 1px rgba(255, 255, 255, 0.08);
+  --glow-income: 0 0 25px -4px rgba(0, 255, 135, 0.35);
+  --glow-expense: 0 0 25px -4px rgba(255, 46, 147, 0.35);
+  --accent-income: #00ff87;
+  --accent-expense: #ff2e93;
+}
+
+html.dark {
+  --bg-primary: #0b0b0e;
+  --bg-card: #121217;
+  --bg-card-secondary: #181822;
+  --border-color: rgba(255, 255, 255, 0.12);
+  --border-strong: rgba(255, 255, 255, 0.22);
+  --text-main: #f5f5f7;
+  --text-muted: #9a9ab0;
+  --card-shadow: 0 10px 30px -5px rgba(0, 0, 0, 0.6), 0 0 1px 1px rgba(255, 255, 255, 0.08);
+  --glow-income: 0 0 25px -4px rgba(0, 255, 135, 0.35);
+  --glow-expense: 0 0 25px -4px rgba(255, 46, 147, 0.35);
+  --accent-income: #00ff87;
+  --accent-expense: #ff2e93;
+}
+
+html:not(.dark) {
+  --bg-primary: #faf7f2;
+  --bg-card: #ffffff;
+  --bg-card-secondary: #f3ede2;
+  --border-color: #121217;
+  --border-strong: #121217;
+  --text-main: #121217;
+  --text-muted: #525266;
+  --card-shadow: 4px 4px 0px #121217;
+  --glow-income: 3px 3px 0px #087f48;
+  --glow-expense: 3px 3px 0px #d9183b;
+  --accent-income: #087f48;
+  --accent-expense: #d9183b;
+}
+
+*,
+*::before,
+*::after,
+input,
+button,
+select,
+textarea {
+  font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+body {
+  font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+  font-size: 15px;
+  line-height: 1.5;
+  background-color: var(--bg-primary);
+  color: var(--text-main);
+  transition: background-color 0.2s cubic-bezier(0.16, 1, 0.3, 1), color 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+  overflow-x: hidden;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* Clases de texto dinámicas para garantizar contraste absoluto en dark y light */
+.text-main {
+  color: var(--text-main);
+}
+
+.text-muted {
+  color: var(--text-muted);
+}
+
+.bg-main {
+  background-color: var(--bg-primary);
+}
+
+.bg-card {
+  background-color: var(--bg-card);
+}
+
+/* Maximalist Glows and Hard Offset Neobrutalist Shadow Utilities */
+.neo-card {
+  background-color: var(--bg-card);
+  border: 1.5px solid var(--border-color);
+  box-shadow: var(--card-shadow);
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.neo-border {
+  border: 2px solid var(--border-color);
+}
+
+.dark .neo-card {
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  box-shadow: 0 16px 40px -10px rgba(0, 0, 0, 0.7), inset 0 1px 0 rgba(255, 255, 255, 0.08);
+}
+
+html:not(.dark) .neo-card {
+  border: 2px solid #121217;
+  box-shadow: 4px 4px 0px #121217;
+}
+
+html:not(.dark) .neo-card-interactive:hover {
+  transform: translate(-2px, -2px);
+  box-shadow: 6px 6px 0px #121217;
+}
+
+html:not(.dark) .neo-card-interactive:active {
+  transform: translate(2px, 2px);
+  box-shadow: 1px 1px 0px #121217;
+}
+
+.dark .neo-card-interactive:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 20px 40px -10px rgba(0, 0, 0, 0.8), 0 0 20px -3px rgba(0, 240, 255, 0.15);
+}
+
+.dark .neo-card-interactive:active {
+  transform: translateY(0px) scale(0.99);
+}
+
+/* Spring scale microinteraction */
+.btn-spring {
+  transition: transform 0.15s cubic-bezier(0.34, 1.56, 0.64, 1), box-shadow 0.15s ease;
+}
+
+.btn-spring:active {
+  transform: scale(0.95);
+}
+
+/* Custom scrollbars */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(120, 120, 140, 0.25);
+  border-radius: 9999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(120, 120, 140, 0.45);
+}
+
+/* Number display font */
+.font-num {
+  font-family: 'Plus Jakarta Sans', sans-serif;
+  font-feature-settings: "tnum" on, "zero" on;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.015em;
+}
+
+.font-num-maximalist {
+  font-family: 'Plus Jakarta Sans', sans-serif;
+  font-feature-settings: "tnum" on, "zero" on;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.02em;
+}
+
+.font-display-title {
+  font-family: 'Plus Jakarta Sans', sans-serif;
+  letter-spacing: -0.025em;
+}
