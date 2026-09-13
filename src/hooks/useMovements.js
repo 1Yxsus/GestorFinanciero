@@ -46,6 +46,9 @@ export function useMovements() {
   const persist = useCallback((newData) => {
     setData(newData);
     storageService.saveData(newData);
+    window.dispatchEvent(
+      new CustomEvent('aurum_local_mutation', { detail: { payload: newData } })
+    );
   }, []);
 
   // --- CRUD MOVIMIENTOS CON REGLAS DE PRESUPUESTO ---

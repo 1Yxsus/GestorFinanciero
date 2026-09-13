@@ -15,6 +15,7 @@ import {
   Wifi,
   ShieldCheck,
   AlertCircle,
+  HardDrive,
 } from 'lucide-react';
 import { storageService } from '../services/storageService';
 
@@ -23,6 +24,7 @@ export function SyncModal({
   onClose,
   p2p,
   currency,
+  onOpenStorageDiagnostics,
 }) {
   const [activeTab, setActiveTab] = useState('host'); // 'host' | 'connect' | 'backup'
   const [inputCode, setInputCode] = useState('');
@@ -36,7 +38,9 @@ export function SyncModal({
 
   const {
     syncStatus,
+    isLiveConnected,
     myCode,
+    savedRoomCode,
     errorMessage,
     lastSyncStats,
     startHosting,
@@ -250,20 +254,31 @@ export function SyncModal({
           </div>
 
           {/* Notificaciones de Estado P2P */}
-          {syncStatus === 'sync_completed' && (
-            <div className="mb-4 p-3 rounded-2xl bg-[#00ff87]/15 border border-[#00ff87]/40 text-[#087f48] dark:text-[#00ff87] flex flex-col gap-1 text-xs font-bold">
-              <div className="flex items-center gap-2">
-                <ShieldCheck className="w-4 h-4 flex-shrink-0" />
-                <span>¡Sincronización bidireccional exitosa!</span>
+          {(syncStatus === 'connected' || isLiveConnected) && (
+            <div className="mb-4 p-3.5 rounded-2xl bg-[#00ff87]/15 border border-[#00ff87]/40 text-[#087f48] dark:text-[#00ff87] flex flex-col gap-2 text-xs">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2 font-bold">
+                  <span className="w-2.5 h-2.5 rounded-full bg-[#00ff87] animate-pulse" />
+                  <span className="text-sm font-display-title">⚡ Sincronización en Tiempo Real Activa</span>
+                </div>
+                <button
+                  onClick={cleanup}
+                  className="btn-spring px-2.5 py-1 rounded-lg bg-black/10 dark:bg-white/10 text-[11px] font-bold text-muted hover:text-[#ff4365] cursor-pointer"
+                >
+                  Desconectar
+                </button>
               </div>
+              <p className="text-[11px] opacity-90 leading-tight">
+                Ambos dispositivos están vinculados. Cualquier movimiento, reserva o cambio que agregues o edites aquí se reflejará al instante en el otro dispositivo.
+              </p>
               {lastSyncStats && (
-                <div className="text-[11px] font-semibold opacity-90 pl-6">
-                  {lastSyncStats.movementsAdded > 0 && `+${lastSyncStats.movementsAdded} movimientos. `}
-                  {lastSyncStats.movementsUpdated > 0 && `${lastSyncStats.movementsUpdated} actualizados. `}
-                  {lastSyncStats.movementsDeleted > 0 && `${lastSyncStats.movementsDeleted} eliminaciones aplicadas. `}
-                  {lastSyncStats.reservesAdded > 0 && `+${lastSyncStats.reservesAdded} reservas. `}
-                  {lastSyncStats.categoriesAdded > 0 && `+${lastSyncStats.categoriesAdded} categorías. `}
-                  {lastSyncStats.movementsAdded === 0 && lastSyncStats.movementsUpdated === 0 && lastSyncStats.reservesAdded === 0 && 'Ambos dispositivos ya estaban al día.'}
+                <div className="text-[10px] font-semibold opacity-85 pt-1.5 border-t border-[#00ff87]/20 flex flex-wrap gap-x-2">
+                  {lastSyncStats.movementsAdded > 0 && <span>+{lastSyncStats.movementsAdded} movs</span>}
+                  {lastSyncStats.movementsUpdated > 0 && <span>{lastSyncStats.movementsUpdated} actualizados</span>}
+                  {lastSyncStats.movementsDeleted > 0 && <span>{lastSyncStats.movementsDeleted} eliminados</span>}
+                  {lastSyncStats.reservesAdded > 0 && <span>+{lastSyncStats.reservesAdded} reservas</span>}
+                  {lastSyncStats.categoriesAdded > 0 && <span>+{lastSyncStats.categoriesAdded} categorías</span>}
+                  {lastSyncStats.movementsAdded === 0 && lastSyncStats.movementsUpdated === 0 && lastSyncStats.reservesAdded === 0 && <span>Datos completamente al día.</span>}
                 </div>
               )}
             </div>
@@ -360,6 +375,25 @@ export function SyncModal({
                   O ingresa el código manual
                 </span>
               </div>
+
+              {/* Reconexión Rápida a la última sala vinculada */}
+              {savedRoomCode && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setInputCode(savedRoomCode);
+                    connectWithCode(savedRoomCode);
+                  }}
+                  disabled={syncStatus === 'connecting'}
+                  className="btn-spring mb-3 w-full p-2.5 rounded-xl border border-dashed border-[#00f0ff]/40 bg-[#00f0ff]/10 hover:bg-[#00f0ff]/20 text-xs font-bold text-[#00f0ff] flex items-center justify-between cursor-pointer transition-colors"
+                >
+                  <span className="flex items-center gap-1.5">
+                    <Wifi className="w-3.5 h-3.5" />
+                    <span>Reconectar a sala previa: <strong>{savedRoomCode}</strong></span>
+                  </span>
+                  <span>⚡ Conectar</span>
+                </button>
+              )}
 
               {/* Input manual de 6 caracteres */}
               <div>
@@ -464,6 +498,23 @@ export function SyncModal({
                   </button>
                 )}
               </div>
+
+              {/* Enlace discreto a Diagnóstico de Almacenamiento */}
+              {onOpenStorageDiagnostics && (
+                <div className="pt-3 border-t border-black/5 dark:border-white/10 flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <HardDrive className="w-3.5 h-3.5 text-[#00ff87]" />
+                    <span className="text-[11px] font-bold text-muted">Salud de datos locales</span>
+                  </div>
+                  <button
+                    onClick={onOpenStorageDiagnostics}
+                    className="btn-spring text-[11px] font-bold text-[#00ff87] hover:underline cursor-pointer flex items-center gap-1"
+                  >
+                    <span>Ver espacio restante</span>
+                    <span>→</span>
+                  </button>
+                </div>
+              )}
             </div>
           )}
         </motion.div>

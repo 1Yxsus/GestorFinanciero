@@ -2,11 +2,20 @@ import { useState, useRef, useEffect, useCallback } from 'react';
 import { PeerSyncManager } from '../services/peerService';
 import { storageService } from '../services/storageService';
 
-export function useP2PSync({ onSyncSuccess }) {
-  const [syncStatus, setSyncStatus] = useState('idle'); // 'idle' | 'initializing' | 'ready_to_pair' | 'connecting' | 'connected' | 'sync_completed' | 'error'
+const SAVED_ROOM_KEY = 'aurum_paired_room_code';
+
+export function useP2PSync({ onSyncSuccess, onLiveUpdateReceived }) {
+  const [syncStatus, setSyncStatus] = useState('idle'); // 'idle' | 'initializing' | 'ready_to_pair' | 'connecting' | 'connected' | 'error' | 'disconnected'
   const [myCode, setMyCode] = useState('');
   const [errorMessage, setErrorMessage] = useState('');
   const [lastSyncStats, setLastSyncStats] = useState(null);
+  const [savedRoomCode, setSavedRoomCode] = useState(() => {
+    try {
+      return localStorage.getItem(SAVED_ROOM_KEY) || '';
+    } catch {
+      return '';
+    }
+  });
 
   const managerRef = useRef(null);
 
@@ -28,9 +37,15 @@ export function useP2PSync({ onSyncSuccess }) {
     managerRef.current = new PeerSyncManager({
       onStatusChange: ({ status, code, targetCode }) => {
         setSyncStatus(status);
-        if (code) setMyCode(code);
+        if (code) {
+          setMyCode(code);
+          try {
+            localStorage.setItem(SAVED_ROOM_KEY, code);
+            setSavedRoomCode(code);
+          } catch {}
+        }
       },
-      onDataReceived: (incomingPayload, sendReplyCallback) => {
+      onDataReceived: (incomingPayload, sendReplyCallback, meta = {}) => {
         if (!incomingPayload || typeof incomingPayload !== 'object') {
           return;
         }
@@ -38,10 +53,15 @@ export function useP2PSync({ onSyncSuccess }) {
         const localData = storageService.loadData();
         const { mergedData, stats } = storageService.mergeAllData(localData, incomingPayload);
 
-        storageService.saveData(mergedData);
+        // Guardar datos con marca isRemoteSync para no provocar eco
+        storageService.saveData(mergedData, { isRemoteSync: true });
         setLastSyncStats(stats);
 
-        if (onSyncSuccess) {
+        if (meta.isLiveUpdate) {
+          if (onLiveUpdateReceived) {
+            onLiveUpdateReceived(stats);
+          }
+        } else if (onSyncSuccess) {
           onSyncSuccess(stats);
         }
 
@@ -51,7 +71,7 @@ export function useP2PSync({ onSyncSuccess }) {
         }
       },
       onError: (err) => {
-        console.error('Peer error in hook:', err);
+        console.warn('Peer error in hook:', err);
         setSyncStatus('error');
         setErrorMessage(
           typeof err === 'string'
@@ -62,13 +82,13 @@ export function useP2PSync({ onSyncSuccess }) {
     });
 
     return managerRef.current;
-  }, [cleanup, onSyncSuccess]);
+  }, [cleanup, onSyncSuccess, onLiveUpdateReceived]);
 
   // Modo Host: Crear sala para que el otro dispositivo se conecte
-  const startHosting = useCallback(() => {
+  const startHosting = useCallback((customCode = null) => {
     setErrorMessage('');
     const mgr = initManager();
-    mgr.startHost();
+    mgr.startHost(customCode);
   }, [initManager]);
 
   // Modo Cliente: Conectarse al código del Host enviando el estado local completo
@@ -78,12 +98,39 @@ export function useP2PSync({ onSyncSuccess }) {
       return;
     }
 
+    const cleanCode = targetCode.trim().toUpperCase();
+    try {
+      localStorage.setItem(SAVED_ROOM_KEY, cleanCode);
+      setSavedRoomCode(cleanCode);
+    } catch {}
+
     setErrorMessage('');
     const mgr = initManager();
     const localData = storageService.loadData();
 
-    mgr.connectToHost(targetCode.trim().toUpperCase(), localData);
+    mgr.connectToHost(cleanCode, localData);
   }, [initManager]);
+
+  // Retransmisión automática en tiempo real cuando hay mutaciones locales
+  useEffect(() => {
+    const handleLocalMutation = (e) => {
+      if (e.detail?.isRemoteSync) return;
+      if (managerRef.current && syncStatus === 'connected') {
+        const payload = e.detail?.payload || storageService.getExportPayload();
+        managerRef.current.broadcastLiveUpdate(payload);
+      }
+    };
+
+    window.addEventListener('aurum_local_mutation', handleLocalMutation);
+    return () => window.removeEventListener('aurum_local_mutation', handleLocalMutation);
+  }, [syncStatus]);
+
+  // Enviar cambio manual
+  const broadcastLocalChange = useCallback((payload = null) => {
+    if (!managerRef.current || syncStatus !== 'connected') return false;
+    const dataToSend = payload || storageService.getExportPayload();
+    return managerRef.current.broadcastLiveUpdate(dataToSend);
+  }, [syncStatus]);
 
   // Respaldo manual: Importar texto/JSON con todas las entidades
   const importManualData = useCallback((jsonString) => {
@@ -97,7 +144,7 @@ export function useP2PSync({ onSyncSuccess }) {
       const localData = storageService.loadData();
       const { mergedData, stats } = storageService.mergeAllData(localData, incomingData);
 
-      storageService.saveData(mergedData);
+      storageService.saveData(mergedData, { isRemoteSync: true });
       setLastSyncStats(stats);
       if (onSyncSuccess) onSyncSuccess(stats);
       return { success: true, stats };
@@ -108,11 +155,14 @@ export function useP2PSync({ onSyncSuccess }) {
 
   return {
     syncStatus,
+    isLiveConnected: syncStatus === 'connected',
     myCode,
+    savedRoomCode,
     errorMessage,
     lastSyncStats,
     startHosting,
     connectWithCode,
+    broadcastLocalChange,
     importManualData,
     cleanup,
   };

@@ -214,11 +214,11 @@ export const storageService = {
   /**
    * Guarda el estado completo en localStorage
    */
-  saveData(data) {
+  saveData(data, meta = {}) {
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
-      // Disparar evento para sincronización entre pestañas locales
-      window.dispatchEvent(new Event('aurum_storage_updated'));
+      // Disparar evento para sincronización entre pestañas locales y componentes reactivos
+      window.dispatchEvent(new CustomEvent('aurum_storage_updated', { detail: meta }));
     } catch (e) {
       console.error('Error guardando en localStorage:', e);
     }

@@ -17,6 +17,8 @@ import {
   CheckCircle2,
   AlertCircle,
   Trash2,
+  HardDrive,
+  Wifi,
 } from 'lucide-react';
 import { useTheme } from './hooks/useTheme';
 import { useMovements } from './hooks/useMovements';
@@ -38,6 +40,7 @@ import { SyncModal } from './components/SyncModal';
 import { CategoryManagerModal } from './components/CategoryManagerModal';
 import { ReserveDetailModal } from './components/ReserveDetailModal';
 import { BalanceBreakdownModal } from './components/BalanceBreakdownModal';
+import { StorageDiagnosticsModal } from './components/StorageDiagnosticsModal';
 import { formatCurrency, formatMovementDate } from './utils/formatters';
 import { calculateReserveMetrics, calculateWalletBreakdown } from './utils/budgetCalculations';
 
@@ -103,6 +106,40 @@ export function App() {
   const toastTimeoutRef = useRef(null);
   const [breakdownModal, setBreakdownModal] = useState({ isOpen: false, mode: 'total' });
   const [preselectedReserveForMovement, setPreselectedReserveForMovement] = useState(null);
+  const [isStorageModalOpen, setIsStorageModalOpen] = useState(false);
+  const logoClickRef = useRef({ count: 0, timer: null });
+
+  // Triple toque secreto en el logo o atajo de teclado
+  const handleLogoClick = () => {
+    setCurrentView('balance');
+    logoClickRef.current.count += 1;
+    if (logoClickRef.current.count >= 3) {
+      logoClickRef.current.count = 0;
+      if (logoClickRef.current.timer) clearTimeout(logoClickRef.current.timer);
+      setIsStorageModalOpen(true);
+      showToast('⚡ Diagnóstico de Almacenamiento Local desbloqueado');
+    } else {
+      if (logoClickRef.current.timer) clearTimeout(logoClickRef.current.timer);
+      logoClickRef.current.timer = setTimeout(() => {
+        logoClickRef.current.count = 0;
+      }, 2500);
+    }
+  };
+
+  // Atajo de teclado global: Ctrl + Shift + S o Alt + S
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      if (
+        (e.ctrlKey && e.shiftKey && (e.key === 'S' || e.key === 's')) ||
+        (e.altKey && (e.key === 's' || e.key === 'S'))
+      ) {
+        e.preventDefault();
+        setIsStorageModalOpen((prev) => !prev);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, []);
 
   // Desglose financiero por billetera (Efectivo, Yape/Plin, Banco)
   const walletBreakdown = useMemo(() => {
@@ -136,6 +173,14 @@ export function App() {
   const p2p = useP2PSync({
     onSyncSuccess: (stats) => {
       showToast(`¡Sincronizado con éxito! (+${stats.addedCount} nuevos registros)`);
+    },
+    onLiveUpdateReceived: (stats) => {
+      const parts = [];
+      if (stats.addedCount > 0) parts.push(`+${stats.addedCount} nuevos`);
+      if (stats.updatedCount > 0) parts.push(`${stats.updatedCount} actualizados`);
+      if (stats.deletedCount > 0) parts.push(`${stats.deletedCount} eliminados`);
+      const detail = parts.length > 0 ? ` (${parts.join(', ')})` : '';
+      showToast(`⚡ Sincronizado en tiempo real${detail}`, 'success');
     },
   });
 
@@ -254,11 +299,11 @@ export function App() {
         bg-[#faf7f2]/90 border-[#121217]/15"
       >
         <div className="max-w-4xl mx-auto px-4 sm:px-6 h-16 sm:h-20 flex items-center justify-between">
-          {/* Logo / Marca Maximalista */}
+          {/* Logo / Marca Maximalista con Easter Egg de 3 toques */}
           <div
-            onClick={() => setCurrentView('balance')}
-            className="flex items-center gap-2.5 cursor-pointer"
-            title="Ir a Balance General"
+            onClick={handleLogoClick}
+            className="flex items-center gap-2.5 cursor-pointer select-none"
+            title="Ir a Balance General (3 toques para Diagnóstico de Memoria)"
           >
             <div className="w-9 h-9 sm:w-10 sm:h-10 rounded-2xl flex items-center justify-center font-display-title font-black text-base sm:text-lg border neo-border
               dark:bg-gradient-to-tr dark:from-[#00ff87] dark:to-[#00f0ff] dark:text-black dark:shadow-[0_0_15px_rgba(0,255,135,0.4)]
@@ -277,7 +322,37 @@ export function App() {
           </div>
 
           {/* Acciones de Cabecera */}
-          <div className="flex items-center gap-2 sm:gap-3">
+          <div className="flex items-center gap-2 sm:gap-2.5">
+            {/* Botón e Indicador de Estado P2P en Vivo */}
+            <button
+              onClick={() => setIsSyncModalOpen(true)}
+              className={`btn-spring px-2.5 py-1.5 sm:px-3 sm:py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 border transition-all cursor-pointer ${
+                p2p.isLiveConnected
+                  ? 'bg-[#00ff87]/15 border-[#00ff87]/50 text-[#087f48] dark:text-[#00ff87] shadow-[0_0_12px_rgba(0,255,135,0.25)]'
+                  : p2p.syncStatus === 'connecting'
+                  ? 'bg-[#ffd000]/15 border-[#ffd000]/50 text-[#ffd000]'
+                  : 'bg-black/5 dark:bg-white/5 border-black/10 dark:border-white/10 text-muted hover:text-main'
+              }`}
+              title={
+                p2p.isLiveConnected
+                  ? 'P2P Conectado en tiempo real: los cambios se sincronizan en vivo'
+                  : 'Sincronizar con otro dispositivo (P2P / QR)'
+              }
+            >
+              {p2p.isLiveConnected ? (
+                <>
+                  <span className="w-2 h-2 rounded-full bg-[#00ff87] animate-pulse" />
+                  <span className="hidden sm:inline font-bold">En vivo</span>
+                  <Wifi className="w-3.5 h-3.5" />
+                </>
+              ) : (
+                <>
+                  <RefreshCw className={`w-3.5 h-3.5 ${p2p.syncStatus === 'connecting' ? 'animate-spin text-[#ffd000]' : ''}`} />
+                  <span className="hidden sm:inline">P2P</span>
+                </>
+              )}
+            </button>
+
             <CurrencySelector
               currentCurrency={currency}
               onSelectCurrency={setCurrency}
@@ -781,6 +856,17 @@ export function App() {
                   <RefreshCw className="w-4 h-4 text-[#00ff87]" />
                   <span>Sincronización P2P</span>
                 </button>
+
+                <button
+                  onClick={() => {
+                    setIsMoreMenuOpen(false);
+                    setIsStorageModalOpen(true);
+                  }}
+                  className="w-full p-3 rounded-xl border dark:bg-[#0b0b0e] bg-black/5 border-black/10 dark:border-white/10 flex items-center gap-2.5 text-xs font-bold text-main"
+                >
+                  <HardDrive className="w-4 h-4 text-[#00f0ff]" />
+                  <span>Diagnóstico de Memoria</span>
+                </button>
               </div>
             </motion.div>
           </div>
@@ -860,6 +946,16 @@ export function App() {
         onClose={() => setIsSyncModalOpen(false)}
         p2p={p2p}
         currency={currency}
+        onOpenStorageDiagnostics={() => {
+          setIsSyncModalOpen(false);
+          setIsStorageModalOpen(true);
+        }}
+      />
+
+      {/* Modal Secreto de Diagnóstico de Almacenamiento LocalStorage */}
+      <StorageDiagnosticsModal
+        isOpen={isStorageModalOpen}
+        onClose={() => setIsStorageModalOpen(false)}
       />
 
       {/* Modal de Gestión de Categorías y Orígenes de Ingreso */}

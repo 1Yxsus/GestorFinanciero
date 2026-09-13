@@ -15,6 +15,14 @@ export function generateRoomCode() {
 
 const PEER_PREFIX = 'aurum-fin-';
 
+export const ICE_SERVERS = [
+  { urls: 'stun:stun.l.google.com:19302' },
+  { urls: 'stun:stun1.l.google.com:19302' },
+  { urls: 'stun:stun2.l.google.com:19302' },
+  { urls: 'stun:stun.cloudflare.com:3478' },
+  { urls: 'stun:global.stun.twilio.com:3478' },
+];
+
 export class PeerSyncManager {
   constructor({ onStatusChange, onDataReceived, onError }) {
     this.peer = null;
@@ -24,6 +32,7 @@ export class PeerSyncManager {
     this.onDataReceived = onDataReceived || (() => {});
     this.onError = onError || (() => {});
     this.isInitiator = false;
+    this.heartbeatTimer = null;
   }
 
   /**
@@ -40,11 +49,8 @@ export class PeerSyncManager {
       this.peer = new Peer(fullPeerId, {
         debug: 1,
         config: {
-          iceServers: [
-            { urls: 'stun:stun.l.google.com:19302' },
-            { urls: 'stun:global.stun.twilio.com:3478' }
-          ]
-        }
+          iceServers: ICE_SERVERS,
+        },
       });
 
       this.peer.on('open', (id) => {
@@ -56,9 +62,9 @@ export class PeerSyncManager {
       });
 
       this.peer.on('error', (err) => {
-        console.warn('Error en PeerJS:', err);
-        // Si el ID ya existe, reintentar con otro código
+        console.warn('PeerJS Host Error:', err);
         if (err.type === 'unavailable-id') {
+          // Si el ID ya existe, reintentar con otro código
           this.startHost();
         } else {
           this.onError(err);
@@ -83,11 +89,8 @@ export class PeerSyncManager {
       this.peer = new Peer(undefined, {
         debug: 1,
         config: {
-          iceServers: [
-            { urls: 'stun:stun.l.google.com:19302' },
-            { urls: 'stun:global.stun.twilio.com:3478' }
-          ]
-        }
+          iceServers: ICE_SERVERS,
+        },
       });
 
       this.peer.on('open', () => {
@@ -104,66 +107,134 @@ export class PeerSyncManager {
     }
   }
 
+  startHeartbeat() {
+    this.stopHeartbeat();
+    this.heartbeatTimer = setInterval(() => {
+      if (this.connection && this.connection.open) {
+        try {
+          this.connection.send({ type: 'PING', timestamp: Date.now() });
+        } catch {
+          // Conexión interrumpida
+          this.stopHeartbeat();
+        }
+      }
+    }, 15000);
+  }
+
+  stopHeartbeat() {
+    if (this.heartbeatTimer) {
+      clearInterval(this.heartbeatTimer);
+      this.heartbeatTimer = null;
+    }
+  }
+
   setupConnection(conn, isClient, initialPayload = null) {
     this.connection = conn;
 
-    conn.on('open', () => {
+    const handleOpen = () => {
       this.onStatusChange({ status: 'connected', peer: conn.peer });
+      this.startHeartbeat();
 
-      // Si somos el cliente que se acaba de conectar, enviamos nuestros datos
+      // Si somos el cliente que se acaba de conectar, enviamos nuestros datos completos
       if (isClient && initialPayload) {
-        conn.send({
-          type: 'SYNC_OFFER',
-          payload: initialPayload,
-        });
+        try {
+          conn.send({
+            type: 'SYNC_OFFER',
+            payload: initialPayload,
+          });
+        } catch (e) {
+          console.error('Error enviando SYNC_OFFER:', e);
+        }
       }
-    });
+    };
+
+    if (conn.open) {
+      handleOpen();
+    } else {
+      conn.on('open', handleOpen);
+    }
 
     conn.on('data', (data) => {
       if (!data || !data.type) return;
 
+      // Mantener canal vivo
+      if (data.type === 'PING') {
+        try {
+          conn.send({ type: 'PONG', timestamp: Date.now() });
+        } catch {}
+        return;
+      }
+      if (data.type === 'PONG') {
+        return;
+      }
+
       if (data.type === 'SYNC_OFFER') {
-        // Recibimos datos del segundo dispositivo
+        // Recibimos datos del segundo dispositivo al iniciar
         this.onDataReceived(data.payload, (replyPayload) => {
-          // Respondemos con nuestros datos actualizados/fusionados
-          conn.send({
-            type: 'SYNC_RESPONSE',
-            payload: replyPayload,
-          });
-          this.onStatusChange({ status: 'sync_completed' });
-        });
+          // Respondemos con nuestros datos actualizados y fusionados
+          try {
+            conn.send({
+              type: 'SYNC_RESPONSE',
+              payload: replyPayload,
+            });
+          } catch (e) {
+            console.error('Error enviando SYNC_RESPONSE:', e);
+          }
+          this.onStatusChange({ status: 'connected', isLive: true });
+        }, { isInitialSync: true });
       } else if (data.type === 'SYNC_RESPONSE') {
         // Recibimos la confirmación y datos fusionados del anfitrión
-        this.onDataReceived(data.payload);
-        this.onStatusChange({ status: 'sync_completed' });
+        this.onDataReceived(data.payload, null, { isInitialSync: true });
+        this.onStatusChange({ status: 'connected', isLive: true });
+      } else if (data.type === 'LIVE_UPDATE') {
+        // Retransmisión en tiempo real al agregar/editar/borrar en el otro dispositivo
+        this.onDataReceived(data.payload, null, { isLiveUpdate: true });
+        this.onStatusChange({ status: 'connected', isLive: true });
       }
     });
 
     conn.on('close', () => {
+      this.stopHeartbeat();
       this.onStatusChange({ status: 'disconnected' });
     });
 
     conn.on('error', (err) => {
+      this.stopHeartbeat();
       this.onError(err);
     });
   }
 
-  sendData(payload) {
+  /**
+   * Envía una actualización en tiempo real al peer conectado
+   */
+  broadcastLiveUpdate(payload) {
     if (this.connection && this.connection.open) {
-      this.connection.send({
-        type: 'SYNC_OFFER',
-        payload
-      });
+      try {
+        this.connection.send({
+          type: 'LIVE_UPDATE',
+          payload,
+        });
+        return true;
+      } catch (e) {
+        console.warn('Error en broadcastLiveUpdate:', e);
+        return false;
+      }
     }
+    return false;
   }
 
   destroy() {
+    this.stopHeartbeat();
     if (this.connection) {
-      try { this.connection.close(); } catch {}
+      try {
+        this.connection.close();
+      } catch {}
       this.connection = null;
     }
     if (this.peer) {
-      try { this.peer.destroy(); } catch {}
+      try {
+        this.peer.destroy();
+      } catch {}
       this.peer = null;
     }
   }
