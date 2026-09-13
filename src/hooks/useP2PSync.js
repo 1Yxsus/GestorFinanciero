@@ -3,10 +3,18 @@ import { PeerSyncManager } from '../services/peerService';
 import { storageService } from '../services/storageService';
 
 const SAVED_ROOM_KEY = 'aurum_paired_room_code';
+const SAVED_SYNC_ROLE = 'aurum_sync_role'; // 'host' | 'client'
 
 export function useP2PSync({ onSyncSuccess, onLiveUpdateReceived }) {
   const [syncStatus, setSyncStatus] = useState('idle'); // 'idle' | 'initializing' | 'ready_to_pair' | 'connecting' | 'connected' | 'error' | 'disconnected'
-  const [myCode, setMyCode] = useState('');
+  const [myCode, setMyCode] = useState(() => {
+    try {
+      const role = localStorage.getItem(SAVED_SYNC_ROLE);
+      return role === 'host' ? localStorage.getItem(SAVED_ROOM_KEY) || '' : '';
+    } catch {
+      return '';
+    }
+  });
   const [errorMessage, setErrorMessage] = useState('');
   const [lastSyncStats, setLastSyncStats] = useState(null);
   const [savedRoomCode, setSavedRoomCode] = useState(() => {
@@ -19,7 +27,7 @@ export function useP2PSync({ onSyncSuccess, onLiveUpdateReceived }) {
 
   const managerRef = useRef(null);
 
-  // Inicializar o limpiar el gestor P2P
+  // Limpieza del gestor P2P
   const cleanup = useCallback(() => {
     if (managerRef.current) {
       managerRef.current.destroy();
@@ -27,8 +35,17 @@ export function useP2PSync({ onSyncSuccess, onLiveUpdateReceived }) {
     }
   }, []);
 
-  useEffect(() => {
-    return () => cleanup();
+  // Desconexión manual intencional (olvida la vinculación para no reconectar solo)
+  const disconnect = useCallback(() => {
+    cleanup();
+    try {
+      localStorage.removeItem(SAVED_ROOM_KEY);
+      localStorage.removeItem(SAVED_SYNC_ROLE);
+      setSavedRoomCode('');
+      setMyCode('');
+      setSyncStatus('idle');
+      setErrorMessage('');
+    } catch {}
   }, [cleanup]);
 
   const initManager = useCallback(() => {
@@ -41,6 +58,7 @@ export function useP2PSync({ onSyncSuccess, onLiveUpdateReceived }) {
           setMyCode(code);
           try {
             localStorage.setItem(SAVED_ROOM_KEY, code);
+            localStorage.setItem(SAVED_SYNC_ROLE, 'host');
             setSavedRoomCode(code);
           } catch {}
         }
@@ -101,6 +119,7 @@ export function useP2PSync({ onSyncSuccess, onLiveUpdateReceived }) {
     const cleanCode = targetCode.trim().toUpperCase();
     try {
       localStorage.setItem(SAVED_ROOM_KEY, cleanCode);
+      localStorage.setItem(SAVED_SYNC_ROLE, 'client');
       setSavedRoomCode(cleanCode);
     } catch {}
 
@@ -110,6 +129,57 @@ export function useP2PSync({ onSyncSuccess, onLiveUpdateReceived }) {
 
     mgr.connectToHost(cleanCode, localData);
   }, [initManager]);
+
+  // 1. RECONEXIÓN AUTOMÁTICA AL CARGAR LA PÁGINA (F5 / Reinicio)
+  useEffect(() => {
+    try {
+      const savedRole = localStorage.getItem(SAVED_SYNC_ROLE);
+      const savedCode = localStorage.getItem(SAVED_ROOM_KEY);
+
+      if (savedCode && savedRole) {
+        console.log(`[P2P] Restaurando sesión de sincronización previa: ${savedRole} -> ${savedCode}`);
+        if (savedRole === 'host') {
+          startHosting(savedCode);
+        } else if (savedRole === 'client') {
+          setTimeout(() => {
+            connectWithCode(savedCode);
+          }, 400);
+        }
+      }
+    } catch (e) {
+      console.warn('Error al leer sesión previa de P2P:', e);
+    }
+  }, [startHosting, connectWithCode]);
+
+  // 2. WATCHDOG: Reintento silencioso si éramos cliente y la conexión se cayó o el host recargó
+  useEffect(() => {
+    if (syncStatus === 'disconnected' || syncStatus === 'error') {
+      const savedRole = localStorage.getItem(SAVED_SYNC_ROLE);
+      const savedCode = localStorage.getItem(SAVED_ROOM_KEY);
+
+      if (savedRole === 'client' && savedCode) {
+        const timer = setTimeout(() => {
+          console.log('[P2P Watchdog] Reintentando conexión con anfitrión:', savedCode);
+          connectWithCode(savedCode);
+        }, 7000);
+        return () => clearTimeout(timer);
+      }
+    }
+  }, [syncStatus, connectWithCode]);
+
+  // 3. LIMPIEZA LIMPIA AL CERRAR O RECARGAR PESTAÑA
+  useEffect(() => {
+    const handleBeforeUnload = () => {
+      if (managerRef.current) {
+        managerRef.current.destroy();
+      }
+    };
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => {
+      window.removeEventListener('beforeunload', handleBeforeUnload);
+      cleanup();
+    };
+  }, [cleanup]);
 
   // Retransmisión automática en tiempo real cuando hay mutaciones locales
   useEffect(() => {
@@ -164,6 +234,7 @@ export function useP2PSync({ onSyncSuccess, onLiveUpdateReceived }) {
     connectWithCode,
     broadcastLocalChange,
     importManualData,
-    cleanup,
+    disconnect,
+    cleanup: disconnect,
   };
 }

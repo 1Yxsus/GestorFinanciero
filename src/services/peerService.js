@@ -33,6 +33,7 @@ export class PeerSyncManager {
     this.onError = onError || (() => {});
     this.isInitiator = false;
     this.heartbeatTimer = null;
+    this.reconnectTimeout = null;
   }
 
   /**
@@ -62,10 +63,21 @@ export class PeerSyncManager {
       });
 
       this.peer.on('error', (err) => {
-        console.warn('PeerJS Host Error:', err);
+        console.warn('PeerJS Host Error:', err.type, err);
         if (err.type === 'unavailable-id') {
-          // Si el ID ya existe, reintentar con otro código
-          this.startHost();
+          // El ID aún está retenido en el servidor de señalización por una recarga previa
+          console.log('[PeerJS] ID retenido por recarga rápida. Reintentando con el mismo código en 1.5s...');
+          this.reconnectTimeout = setTimeout(() => {
+            if (!this.peer || this.peer.destroyed) {
+              this.startHost(this.myCode);
+            } else {
+              try {
+                this.peer.reconnect();
+              } catch {
+                this.startHost(this.myCode);
+              }
+            }
+          }, 1500);
         } else {
           this.onError(err);
         }
@@ -83,7 +95,7 @@ export class PeerSyncManager {
     const cleanCode = targetCode.trim().toLowerCase();
     const targetPeerId = `${PEER_PREFIX}${cleanCode}`;
 
-    this.onStatusChange({ status: 'connecting', targetCode });
+    this.onStatusChange({ status: 'connecting', targetCode: cleanCode.toUpperCase() });
 
     try {
       this.peer = new Peer(undefined, {
@@ -99,7 +111,7 @@ export class PeerSyncManager {
       });
 
       this.peer.on('error', (err) => {
-        console.error('Error conectando al peer:', err);
+        console.warn('Error conectando al peer:', err.type, err);
         this.onError(err);
       });
     } catch (e) {
@@ -114,11 +126,10 @@ export class PeerSyncManager {
         try {
           this.connection.send({ type: 'PING', timestamp: Date.now() });
         } catch {
-          // Conexión interrumpida
           this.stopHeartbeat();
         }
       }
-    }, 15000);
+    }, 8000);
   }
 
   stopHeartbeat() {
@@ -225,6 +236,10 @@ export class PeerSyncManager {
 
   destroy() {
     this.stopHeartbeat();
+    if (this.reconnectTimeout) {
+      clearTimeout(this.reconnectTimeout);
+      this.reconnectTimeout = null;
+    }
     if (this.connection) {
       try {
         this.connection.close();
