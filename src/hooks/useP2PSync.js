@@ -1,33 +1,101 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
-import { PeerSyncManager } from '../services/peerService';
+import { PeerSyncManager, generateDeviceCode } from '../services/peerService';
 import { storageService } from '../services/storageService';
 
-const SAVED_ROOM_KEY = 'aurum_paired_room_code';
-const SAVED_SYNC_ROLE = 'aurum_sync_role'; // 'host' | 'client'
+const MY_DEVICE_CODE_KEY = 'aurum_my_device_code';
+const PAIRED_DEVICE_CODE_KEY = 'aurum_paired_device_code';
+const SESSION_DEVICE_CODE_KEY = 'aurum_session_device_code';
+
+export function getOrCreateMyDeviceCode() {
+  try {
+    const sessionCode = sessionStorage.getItem(SESSION_DEVICE_CODE_KEY);
+    if (sessionCode) return sessionCode.trim().toUpperCase();
+
+    let code = localStorage.getItem(MY_DEVICE_CODE_KEY);
+    if (!code) {
+      code = generateDeviceCode();
+      localStorage.setItem(MY_DEVICE_CODE_KEY, code);
+    }
+    sessionStorage.setItem(SESSION_DEVICE_CODE_KEY, code);
+    return code.trim().toUpperCase();
+  } catch {
+    return generateDeviceCode();
+  }
+}
+
+export function getStoredPairedDeviceCode(myCode) {
+  try {
+    const sessionPaired = sessionStorage.getItem(PAIRED_DEVICE_CODE_KEY);
+    if (sessionPaired && !sessionPaired.startsWith('TEST-') && sessionPaired.length >= 4) {
+      return sessionPaired.trim().toUpperCase();
+    }
+
+    if (myCode) {
+      const perDevice = localStorage.getItem(`${PAIRED_DEVICE_CODE_KEY}_${myCode}`);
+      if (perDevice && !perDevice.startsWith('TEST-') && perDevice.length >= 4) {
+        return perDevice.trim().toUpperCase();
+      }
+    }
+
+    const generic = localStorage.getItem(PAIRED_DEVICE_CODE_KEY) || '';
+    if (generic && generic.startsWith('TEST-')) {
+      try {
+        localStorage.removeItem(PAIRED_DEVICE_CODE_KEY);
+      } catch {}
+      return '';
+    }
+
+    if (
+      generic &&
+      generic.length >= 4 &&
+      myCode &&
+      generic.trim().toUpperCase() !== myCode.trim().toUpperCase()
+    ) {
+      return generic.trim().toUpperCase();
+    }
+    return '';
+  } catch {
+    return '';
+  }
+}
+
+export function saveStoredPairedDeviceCode(myCode, pairedCode) {
+  try {
+    if (!pairedCode) {
+      sessionStorage.removeItem(PAIRED_DEVICE_CODE_KEY);
+      localStorage.removeItem(PAIRED_DEVICE_CODE_KEY);
+      if (myCode) {
+        localStorage.removeItem(`${PAIRED_DEVICE_CODE_KEY}_${myCode}`);
+      }
+      return;
+    }
+    const clean = pairedCode.trim().toUpperCase();
+    sessionStorage.setItem(PAIRED_DEVICE_CODE_KEY, clean);
+    localStorage.setItem(PAIRED_DEVICE_CODE_KEY, clean);
+    if (myCode) {
+      localStorage.setItem(`${PAIRED_DEVICE_CODE_KEY}_${myCode}`, clean);
+    }
+  } catch {}
+}
 
 export function useP2PSync({ onSyncSuccess, onLiveUpdateReceived }) {
-  const [syncStatus, setSyncStatus] = useState('idle'); // 'idle' | 'initializing' | 'ready_to_pair' | 'connecting' | 'connected' | 'error' | 'disconnected'
-  const [myCode, setMyCode] = useState(() => {
-    try {
-      const role = localStorage.getItem(SAVED_SYNC_ROLE);
-      return role === 'host' ? localStorage.getItem(SAVED_ROOM_KEY) || '' : '';
-    } catch {
-      return '';
-    }
-  });
+  const [syncStatus, setSyncStatus] = useState('idle'); // 'idle' | 'initializing' | 'ready' | 'connecting' | 'connected' | 'error' | 'disconnected'
+  const [myCode, setMyCode] = useState(getOrCreateMyDeviceCode);
+  const [pairedCode, setPairedCode] = useState(() => getStoredPairedDeviceCode(getOrCreateMyDeviceCode()));
   const [errorMessage, setErrorMessage] = useState('');
   const [lastSyncStats, setLastSyncStats] = useState(null);
-  const [savedRoomCode, setSavedRoomCode] = useState(() => {
-    try {
-      return localStorage.getItem(SAVED_ROOM_KEY) || '';
-    } catch {
-      return '';
-    }
-  });
 
   const managerRef = useRef(null);
+  const hasInitializedRef = useRef(false);
 
-  // Limpieza del gestor P2P
+  // Referencias estables de callbacks
+  const onSyncSuccessRef = useRef(onSyncSuccess);
+  const onLiveUpdateReceivedRef = useRef(onLiveUpdateReceived);
+  useEffect(() => {
+    onSyncSuccessRef.current = onSyncSuccess;
+    onLiveUpdateReceivedRef.current = onLiveUpdateReceived;
+  });
+
   const cleanup = useCallback(() => {
     if (managerRef.current) {
       managerRef.current.destroy();
@@ -35,33 +103,41 @@ export function useP2PSync({ onSyncSuccess, onLiveUpdateReceived }) {
     }
   }, []);
 
-  // Desconexión manual intencional (olvida la vinculación para no reconectar solo)
-  const disconnect = useCallback(() => {
-    cleanup();
-    try {
-      localStorage.removeItem(SAVED_ROOM_KEY);
-      localStorage.removeItem(SAVED_SYNC_ROLE);
-      setSavedRoomCode('');
-      setMyCode('');
-      setSyncStatus('idle');
-      setErrorMessage('');
-    } catch {}
-  }, [cleanup]);
-
+  // Inicializar el gestor P2P
   const initManager = useCallback(() => {
-    cleanup();
+    if (managerRef.current) {
+      managerRef.current.destroy();
+      managerRef.current = null;
+    }
 
     managerRef.current = new PeerSyncManager({
-      onStatusChange: ({ status, code, targetCode }) => {
+      getLocalData: () => storageService.loadData(),
+      onStatusChange: ({ status, myCode: currentCode, pairedCode: remoteCode }) => {
         setSyncStatus(status);
-        if (code) {
-          setMyCode(code);
+        if (status === 'ready' || status === 'connected') {
+          setErrorMessage('');
+        }
+        if (currentCode) {
+          setMyCode(currentCode);
           try {
-            localStorage.setItem(SAVED_ROOM_KEY, code);
-            localStorage.setItem(SAVED_SYNC_ROLE, 'host');
-            setSavedRoomCode(code);
+            sessionStorage.setItem(SESSION_DEVICE_CODE_KEY, currentCode);
           } catch {}
         }
+        // Preservar siempre la vinculación persistente
+        if (remoteCode) {
+          setPairedCode(remoteCode);
+          saveStoredPairedDeviceCode(currentCode || getOrCreateMyDeviceCode(), remoteCode);
+        } else {
+          const stored = getStoredPairedDeviceCode(currentCode || getOrCreateMyDeviceCode());
+          setPairedCode(stored);
+        }
+      },
+      onPairedDeviceDiscovered: (discoveredRemoteCode) => {
+        console.log('[P2P] Dispositivo remoto vinculado descubierto:', discoveredRemoteCode);
+        const codeToSave = discoveredRemoteCode.trim().toUpperCase();
+        const activeMyCode = getOrCreateMyDeviceCode();
+        saveStoredPairedDeviceCode(activeMyCode, codeToSave);
+        setPairedCode(codeToSave);
       },
       onDataReceived: (incomingPayload, sendReplyCallback, meta = {}) => {
         if (!incomingPayload || typeof incomingPayload !== 'object') {
@@ -71,103 +147,187 @@ export function useP2PSync({ onSyncSuccess, onLiveUpdateReceived }) {
         const localData = storageService.loadData();
         const { mergedData, stats } = storageService.mergeAllData(localData, incomingPayload);
 
-        // Guardar datos con marca isRemoteSync para no provocar eco
+        // Guardar con marca isRemoteSync para no provocar eco
         storageService.saveData(mergedData, { isRemoteSync: true });
         setLastSyncStats(stats);
 
         if (meta.isLiveUpdate) {
-          if (onLiveUpdateReceived) {
-            onLiveUpdateReceived(stats);
+          if (onLiveUpdateReceivedRef.current) {
+            onLiveUpdateReceivedRef.current(stats);
           }
-        } else if (onSyncSuccess) {
-          onSyncSuccess(stats);
+        } else if (onSyncSuccessRef.current) {
+          onSyncSuccessRef.current(stats);
         }
 
-        // Si somos el host y recibimos una oferta (SYNC_OFFER), respondemos con el estado unificado completo
         if (sendReplyCallback) {
           sendReplyCallback(mergedData);
         }
       },
       onError: (err) => {
-        console.warn('Peer error in hook:', err);
+        if (!err) {
+          setErrorMessage('');
+          return;
+        }
+        console.warn('[P2P Hook] Error:', err);
+        const msg = typeof err === 'string' ? err : err.message || '';
+        const errType = err.type || '';
+
+        if (msg.includes('Lost connection to server') || errType === 'network') {
+          console.log('[P2P Hook] Reconexión transitoria de señalización...');
+          return;
+        }
+
+        if (errType === 'peer-unavailable') {
+          return;
+        }
+
         setSyncStatus('error');
-        setErrorMessage(
-          typeof err === 'string'
-            ? err
-            : err.message || 'Error de conexión P2P. Puedes usar el código QR de respaldo o importar JSON.'
-        );
+        if (errType === 'browser-incompatible') {
+          setErrorMessage('Tu navegador no soporta WebRTC para sincronización directa.');
+        } else {
+          setErrorMessage(
+            msg || 'Error en canal P2P. Puedes usar el respaldo JSON mientras tanto.'
+          );
+        }
       },
     });
 
     return managerRef.current;
-  }, [cleanup, onSyncSuccess, onLiveUpdateReceived]);
+  }, []);
 
-  // Modo Host: Crear sala para que el otro dispositivo se conecte
-  const startHosting = useCallback((customCode = null) => {
+  // Vincular este dispositivo con el código del otro dispositivo
+  const pairWithDevice = useCallback(
+    (targetCode) => {
+      if (!targetCode || targetCode.trim().length < 4) {
+        setErrorMessage('Por favor ingresa un código válido de 6 caracteres.');
+        return;
+      }
+
+      const cleanTarget = targetCode.trim().toUpperCase();
+      let currentMyCode = getOrCreateMyDeviceCode();
+
+      // Soporte para pruebas en la misma PC / mismo navegador:
+      if (cleanTarget === currentMyCode) {
+        const newTabCode = generateDeviceCode();
+        try {
+          sessionStorage.setItem(SESSION_DEVICE_CODE_KEY, newTabCode);
+        } catch {}
+        currentMyCode = newTabCode;
+        setMyCode(newTabCode);
+      }
+
+      saveStoredPairedDeviceCode(currentMyCode, cleanTarget);
+      setPairedCode(cleanTarget);
+      setErrorMessage('');
+
+      if (!managerRef.current) {
+        const mgr = initManager();
+        mgr.startDevice({
+          myDeviceCode: currentMyCode,
+          pairedDeviceCode: cleanTarget,
+        });
+      } else {
+        managerRef.current.pairWith(cleanTarget);
+      }
+    },
+    [initManager]
+  );
+
+  // Desvincular dispositivo
+  const unpairDevice = useCallback(() => {
+    console.log('[P2P Hook] Desvinculando dispositivo');
+    const activeMyCode = getOrCreateMyDeviceCode();
+    saveStoredPairedDeviceCode(activeMyCode, '');
+    setPairedCode('');
     setErrorMessage('');
-    const mgr = initManager();
-    mgr.startHost(customCode);
-  }, [initManager]);
-
-  // Modo Cliente: Conectarse al código del Host enviando el estado local completo
-  const connectWithCode = useCallback((targetCode) => {
-    if (!targetCode || targetCode.trim().length < 4) {
-      setErrorMessage('Por favor ingresa un código válido de 6 caracteres.');
-      return;
+    if (managerRef.current) {
+      managerRef.current.unpair();
     }
+  }, []);
 
-    const cleanCode = targetCode.trim().toUpperCase();
+  // Generar un código nuevo para este dispositivo
+  const regenerateMyCode = useCallback(() => {
+    const newCode = generateDeviceCode();
     try {
-      localStorage.setItem(SAVED_ROOM_KEY, cleanCode);
-      localStorage.setItem(SAVED_SYNC_ROLE, 'client');
-      setSavedRoomCode(cleanCode);
+      localStorage.setItem(MY_DEVICE_CODE_KEY, newCode);
+      sessionStorage.setItem(SESSION_DEVICE_CODE_KEY, newCode);
+      saveStoredPairedDeviceCode(newCode, '');
     } catch {}
-
+    setMyCode(newCode);
+    setPairedCode('');
     setErrorMessage('');
-    const mgr = initManager();
-    const localData = storageService.loadData();
 
-    mgr.connectToHost(cleanCode, localData);
+    const mgr = initManager();
+    mgr.startDevice({
+      myDeviceCode: newCode,
+      pairedDeviceCode: null,
+    });
   }, [initManager]);
 
-  // 1. RECONEXIÓN AUTOMÁTICA AL CARGAR LA PÁGINA (F5 / Reinicio)
-  useEffect(() => {
-    try {
-      const savedRole = localStorage.getItem(SAVED_SYNC_ROLE);
-      const savedCode = localStorage.getItem(SAVED_ROOM_KEY);
+  // Asegurar que la sesión P2P esté corriendo y conectada
+  const startHosting = useCallback(() => {
+    const currentMyCode = getOrCreateMyDeviceCode();
+    const currentPaired = getStoredPairedDeviceCode(currentMyCode);
 
-      if (savedCode && savedRole) {
-        console.log(`[P2P] Restaurando sesión de sincronización previa: ${savedRole} -> ${savedCode}`);
-        if (savedRole === 'host') {
-          startHosting(savedCode);
-        } else if (savedRole === 'client') {
-          setTimeout(() => {
-            connectWithCode(savedCode);
-          }, 400);
+    if (!managerRef.current) {
+      const mgr = initManager();
+      mgr.startDevice({
+        myDeviceCode: currentMyCode,
+        pairedDeviceCode: currentPaired || null,
+      });
+    } else if (currentPaired && (!managerRef.current.connection || !managerRef.current.connection.open)) {
+      managerRef.current.attemptConnection();
+    }
+  }, [initManager]);
+
+  // 1. INICIALIZACIÓN INMEDIATA Y PERSISTENTE AL ARRANCAR LA APLICACIÓN
+  useEffect(() => {
+    const currentMyCode = getOrCreateMyDeviceCode();
+    const currentPaired = getStoredPairedDeviceCode(currentMyCode);
+
+    console.log(`[P2P Boot] Mi Código: ${currentMyCode} | Vinculado a: ${currentPaired || '(ninguno)'}`);
+
+    const mgr = initManager();
+    mgr.startDevice({
+      myDeviceCode: currentMyCode,
+      pairedDeviceCode: currentPaired || null,
+    });
+
+    return () => {
+      if (managerRef.current) {
+        managerRef.current.destroy();
+        managerRef.current = null;
+      }
+    };
+  }, [initManager]);
+
+  // 2. DETECCIÓN INSTANTÁNEA AL DESBLOQUEAR PANTALLA O VOLVER A LA PESTAÑA
+  useEffect(() => {
+    const handleInstantWakeup = () => {
+      if (document.visibilityState === 'visible') {
+        if (managerRef.current) {
+          if (managerRef.current.peer && managerRef.current.peer.disconnected) {
+            try {
+              managerRef.current.peer.reconnect();
+            } catch {}
+          }
+          if (!managerRef.current.connection || !managerRef.current.connection.open) {
+            console.log('[P2P Wakeup] Pantalla activa/visible: reconectando instantáneamente...');
+            managerRef.current.attemptConnection();
+          }
         }
       }
-    } catch (e) {
-      console.warn('Error al leer sesión previa de P2P:', e);
-    }
-  }, [startHosting, connectWithCode]);
+    };
 
-  // 2. WATCHDOG: Reintento silencioso si éramos cliente y la conexión se cayó o el host recargó
-  useEffect(() => {
-    if (syncStatus === 'disconnected' || syncStatus === 'error') {
-      const savedRole = localStorage.getItem(SAVED_SYNC_ROLE);
-      const savedCode = localStorage.getItem(SAVED_ROOM_KEY);
+    window.addEventListener('focus', handleInstantWakeup);
+    document.addEventListener('visibilitychange', handleInstantWakeup);
+    return () => {
+      window.removeEventListener('focus', handleInstantWakeup);
+      document.removeEventListener('visibilitychange', handleInstantWakeup);
+    };
+  }, []);
 
-      if (savedRole === 'client' && savedCode) {
-        const timer = setTimeout(() => {
-          console.log('[P2P Watchdog] Reintentando conexión con anfitrión:', savedCode);
-          connectWithCode(savedCode);
-        }, 7000);
-        return () => clearTimeout(timer);
-      }
-    }
-  }, [syncStatus, connectWithCode]);
-
-  // 3. LIMPIEZA LIMPIA AL CERRAR O RECARGAR PESTAÑA
+  // 3. LIMPIEZA LIMPIA AL CERRAR PESTAÑA
   useEffect(() => {
     const handleBeforeUnload = () => {
       if (managerRef.current) {
@@ -177,11 +337,10 @@ export function useP2PSync({ onSyncSuccess, onLiveUpdateReceived }) {
     window.addEventListener('beforeunload', handleBeforeUnload);
     return () => {
       window.removeEventListener('beforeunload', handleBeforeUnload);
-      cleanup();
     };
-  }, [cleanup]);
+  }, []);
 
-  // Retransmisión automática en tiempo real cuando hay mutaciones locales
+  // 4. RETRANSMISIÓN EN TIEMPO REAL CUANDO HAY MUTACIONES LOCALES
   useEffect(() => {
     const handleLocalMutation = (e) => {
       if (e.detail?.isRemoteSync) return;
@@ -202,13 +361,13 @@ export function useP2PSync({ onSyncSuccess, onLiveUpdateReceived }) {
     return managerRef.current.broadcastLiveUpdate(dataToSend);
   }, [syncStatus]);
 
-  // Respaldo manual: Importar texto/JSON con todas las entidades
+  // Respaldo manual: Importar texto/JSON
   const importManualData = useCallback((jsonString) => {
     try {
       const parsed = JSON.parse(jsonString);
       const incomingData = Array.isArray(parsed) ? { movements: parsed } : parsed;
       if (!incomingData || typeof incomingData !== 'object') {
-        throw new Error('Formato JSON no válido: los datos están corruptos.');
+        throw new Error('Formato JSON no válido.');
       }
 
       const localData = storageService.loadData();
@@ -216,25 +375,29 @@ export function useP2PSync({ onSyncSuccess, onLiveUpdateReceived }) {
 
       storageService.saveData(mergedData, { isRemoteSync: true });
       setLastSyncStats(stats);
-      if (onSyncSuccess) onSyncSuccess(stats);
+      if (onSyncSuccessRef.current) onSyncSuccessRef.current(stats);
       return { success: true, stats };
     } catch (e) {
       return { success: false, error: e.message };
     }
-  }, [onSyncSuccess]);
+  }, []);
 
   return {
     syncStatus,
     isLiveConnected: syncStatus === 'connected',
     myCode,
-    savedRoomCode,
+    pairedCode,
+    savedRoomCode: pairedCode, // alias para compatibilidad
     errorMessage,
     lastSyncStats,
+    pairWithDevice,
+    connectWithCode: pairWithDevice, // alias para compatibilidad
     startHosting,
-    connectWithCode,
+    unpairDevice,
+    disconnect: unpairDevice, // alias para compatibilidad
+    regenerateMyCode,
     broadcastLocalChange,
     importManualData,
-    disconnect,
-    cleanup: disconnect,
+    cleanup,
   };
 }

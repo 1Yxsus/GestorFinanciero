@@ -16,6 +16,8 @@ import {
   ShieldCheck,
   AlertCircle,
   HardDrive,
+  Link,
+  Unlink,
 } from 'lucide-react';
 import { storageService } from '../services/storageService';
 
@@ -40,21 +42,15 @@ export function SyncModal({
     syncStatus,
     isLiveConnected,
     myCode,
-    savedRoomCode,
+    pairedCode,
     errorMessage,
     lastSyncStats,
-    startHosting,
-    connectWithCode,
+    pairWithDevice,
+    unpairDevice,
+    regenerateMyCode,
     importManualData,
     cleanup,
   } = p2p;
-
-  // Iniciar hosting al abrir la pestaña host
-  useEffect(() => {
-    if (isOpen && activeTab === 'host' && !myCode) {
-      startHosting();
-    }
-  }, [isOpen, activeTab, myCode, startHosting]);
 
   // Detener cámara al cambiar de pestaña o cerrar
   useEffect(() => {
@@ -80,7 +76,6 @@ export function SyncModal({
 
   const startCameraScanner = async () => {
     setCameraActive(true);
-    // Esperar a que el elemento DOM del escáner exista
     setTimeout(async () => {
       try {
         const scanner = new Html5Qrcode('qr-reader-container');
@@ -93,11 +88,10 @@ export function SyncModal({
             qrbox: { width: 250, height: 250 },
           },
           (decodedText) => {
-            // Se leyó un QR
             stopCameraScanner();
             handleQrDecoded(decodedText);
           },
-          () => {} // Ignorar frames sin QR
+          () => {}
         );
       } catch (err) {
         console.error('Error iniciando cámara:', err);
@@ -107,17 +101,15 @@ export function SyncModal({
   };
 
   const handleQrDecoded = (text) => {
-    // Si el QR contiene directamente el código de 6 caracteres o un enlace con prefijo
     let code = text.trim();
     if (code.includes('aurum:')) {
       code = code.replace('aurum:', '');
     } else if (code.startsWith('{')) {
-      // Es un respaldo JSON completo escaneado
       importManualData(code);
       return;
     }
     setInputCode(code);
-    connectWithCode(code);
+    pairWithDevice(code);
   };
 
   const handleCopyCode = () => {
@@ -190,10 +182,10 @@ export function SyncModal({
               </div>
               <div>
                 <h3 className="font-display-title font-extrabold text-base sm:text-lg text-main leading-none">
-                  Sincronización P2P Dual
+                  Sincronización P2P Permanente
                 </h3>
                 <p className="text-[11px] text-muted mt-1 font-medium">
-                  Conexión directa navegador a navegador sin servidores
+                  Identidad única por dispositivo y reconexión instantánea
                 </p>
               </div>
             </div>
@@ -222,7 +214,7 @@ export function SyncModal({
                   : 'text-muted hover:text-main'}`}
             >
               <QrCode className="w-3.5 h-3.5" />
-              <span>Emitir QR</span>
+              <span>Mi Código</span>
             </button>
 
             <button
@@ -235,7 +227,7 @@ export function SyncModal({
                   : 'text-muted hover:text-main'}`}
             >
               <Smartphone className="w-3.5 h-3.5" />
-              <span>Conectar</span>
+              <span>Vincular</span>
             </button>
 
             <button
@@ -253,7 +245,7 @@ export function SyncModal({
             </button>
           </div>
 
-          {/* Notificaciones de Estado P2P */}
+          {/* Banner: Dispositivo Conectado en Tiempo Real */}
           {(syncStatus === 'connected' || isLiveConnected) && (
             <div className="mb-4 p-3.5 rounded-2xl bg-[#00ff87]/15 border border-[#00ff87]/40 text-[#087f48] dark:text-[#00ff87] flex flex-col gap-2 text-xs">
               <div className="flex items-center justify-between">
@@ -262,14 +254,15 @@ export function SyncModal({
                   <span className="text-sm font-display-title">⚡ Sincronización en Tiempo Real Activa</span>
                 </div>
                 <button
-                  onClick={cleanup}
-                  className="btn-spring px-2.5 py-1 rounded-lg bg-black/10 dark:bg-white/10 text-[11px] font-bold text-muted hover:text-[#ff4365] cursor-pointer"
+                  onClick={unpairDevice}
+                  className="btn-spring px-2.5 py-1 rounded-lg bg-black/10 dark:bg-white/10 text-[11px] font-bold text-muted hover:text-[#ff4365] cursor-pointer flex items-center gap-1"
                 >
-                  Desconectar
+                  <Unlink className="w-3 h-3" />
+                  <span>Desvincular</span>
                 </button>
               </div>
               <p className="text-[11px] opacity-90 leading-tight">
-                Ambos dispositivos están vinculados. Cualquier movimiento, reserva o cambio que agregues o edites aquí se reflejará al instante en el otro dispositivo.
+                Dispositivo vinculado: <strong className="font-mono bg-black/10 dark:bg-white/10 px-1.5 py-0.5 rounded">{pairedCode}</strong> (Tu código: <span className="font-mono">{myCode}</span>). Tus datos se sincronizan automáticamente sin depender de un servidor central.
               </p>
               {lastSyncStats && (
                 <div className="text-[10px] font-semibold opacity-85 pt-1.5 border-t border-[#00ff87]/20 flex flex-wrap gap-x-2">
@@ -284,6 +277,25 @@ export function SyncModal({
             </div>
           )}
 
+          {/* Banner: Reconexión Automática Persistente (Buscando al par vinculado) */}
+          {pairedCode && syncStatus !== 'connected' && !isLiveConnected && (
+            <div className="mb-4 p-3 rounded-2xl bg-[#00f0ff]/10 border border-[#00f0ff]/30 text-[#00f0ff] flex items-center justify-between text-xs">
+              <div className="flex items-center gap-2 font-medium">
+                <span className="w-2 h-2 rounded-full bg-[#00f0ff] animate-ping flex-shrink-0" />
+                <span>
+                  Buscando instantáneamente al dispositivo vinculado: <strong className="font-mono">{pairedCode}</strong>
+                </span>
+              </div>
+              <button
+                onClick={unpairDevice}
+                className="btn-spring px-2.5 py-1 rounded-lg bg-black/10 dark:bg-white/10 text-[10px] font-bold hover:text-[#ff4365] cursor-pointer text-muted ml-2 flex-shrink-0"
+                title="Desvincular este dispositivo"
+              >
+                Desvincular
+              </button>
+            </div>
+          )}
+
           {errorMessage && (
             <div className="mb-4 p-3 rounded-2xl bg-[#ff2e93]/15 border border-[#ff2e93]/40 text-[#d9183b] dark:text-[#ff4365] flex items-center gap-2 text-xs font-semibold">
               <AlertCircle className="w-4 h-4 flex-shrink-0" />
@@ -291,11 +303,11 @@ export function SyncModal({
             </div>
           )}
 
-          {/* CONTENIDO PESTAÑA 1: HOST (Emitir Código / QR) */}
+          {/* CONTENIDO PESTAÑA 1: MI CÓDIGO (QR + Código propio) */}
           {activeTab === 'host' && (
             <div className="flex flex-col items-center text-center">
               <p className="text-xs text-muted mb-4 max-w-xs">
-                Escanea este código con tu teléfono o segundo dispositivo para sincronizar ambos navegadores.
+                Muestra este código o QR en tu segundo dispositivo para vincularlos permanentemente.
               </p>
 
               {/* Render de Código QR */}
@@ -314,10 +326,10 @@ export function SyncModal({
                 )}
               </div>
 
-              {/* Código de 6 caracteres con botón copiar */}
+              {/* Código de 6 caracteres propio con botón copiar */}
               <div className="w-full max-w-xs mb-3">
                 <span className="block text-[10px] font-bold uppercase tracking-wider text-muted mb-1">
-                  Código de emparejamiento manual:
+                  Código propio de este dispositivo:
                 </span>
                 <div className="flex items-center justify-between p-3 rounded-2xl border dark:bg-[#0b0b0e] dark:border-white/20 bg-[#f3ede2] border-[#121217]/30 shadow-sm">
                   <span className="font-num font-black text-2xl tracking-widest text-[#087f48] dark:text-[#00ff87]">
@@ -331,18 +343,41 @@ export function SyncModal({
                     <span>{copied ? 'Copiado' : 'Copiar'}</span>
                   </button>
                 </div>
+                <div className="flex items-center justify-center mt-2 px-1">
+                  <button
+                    type="button"
+                    onClick={regenerateMyCode}
+                    className="btn-spring text-[11px] font-bold text-muted hover:text-[#00f0ff] flex items-center gap-1 cursor-pointer transition-colors"
+                    title="Generar una nueva identidad única para este dispositivo"
+                  >
+                    <RefreshCw className="w-3 h-3" />
+                    <span>Generar nueva identidad para este dispositivo</span>
+                  </button>
+                </div>
               </div>
 
               <div className="flex items-center gap-2 text-[11px] text-muted font-medium">
-                <span className={`w-2 h-2 rounded-full ${syncStatus === 'ready_to_pair' ? 'bg-[#00ff87] animate-ping' : 'bg-yellow-400'}`} />
+                <span
+                  className={`w-2 h-2 rounded-full ${
+                    syncStatus === 'connected'
+                      ? 'bg-[#00ff87]'
+                      : pairedCode
+                      ? 'bg-[#00f0ff] animate-pulse'
+                      : 'bg-yellow-400'
+                  }`}
+                />
                 <span>
-                  {syncStatus === 'ready_to_pair' ? 'Esperando conexión del segundo dispositivo...' : 'Iniciando canal WebRTC...'}
+                  {syncStatus === 'connected'
+                    ? `Vinculado y conectado con ${pairedCode}`
+                    : pairedCode
+                    ? `Esperando al dispositivo vinculado (${pairedCode})...`
+                    : 'Listo — Esperando vinculación'}
                 </span>
               </div>
             </div>
           )}
 
-          {/* CONTENIDO PESTAÑA 2: CONECTAR (Cámara o Código) */}
+          {/* CONTENIDO PESTAÑA 2: VINCULAR (Cámara o Código) */}
           {activeTab === 'connect' && (
             <div className="flex flex-col gap-4">
               {/* Botón para abrir escáner de cámara */}
@@ -355,7 +390,7 @@ export function SyncModal({
                     bg-[#121217] text-white shadow-[3px_3px_0px_#00f0ff]"
                 >
                   <Camera className="w-4 h-4" />
-                  <span>Escanear QR con Cámara</span>
+                  <span>Escanear QR del otro dispositivo</span>
                 </button>
               ) : (
                 <div className="flex flex-col items-center">
@@ -372,24 +407,21 @@ export function SyncModal({
               <div className="relative flex items-center justify-center my-1">
                 <div className="border-t border-black/10 dark:border-white/10 w-full" />
                 <span className="absolute bg-[#ffffff] dark:bg-[#13131a] px-3 text-[10px] font-bold uppercase tracking-wider text-muted">
-                  O ingresa el código manual
+                  O ingresa el código del otro dispositivo
                 </span>
               </div>
 
-              {/* Reconexión Rápida a la última sala vinculada */}
-              {savedRoomCode && (
+              {/* Reconexión Rápida al dispositivo vinculado */}
+              {pairedCode && syncStatus !== 'connected' && (
                 <button
                   type="button"
-                  onClick={() => {
-                    setInputCode(savedRoomCode);
-                    connectWithCode(savedRoomCode);
-                  }}
+                  onClick={() => pairWithDevice(pairedCode)}
                   disabled={syncStatus === 'connecting'}
                   className="btn-spring mb-3 w-full p-2.5 rounded-xl border border-dashed border-[#00f0ff]/40 bg-[#00f0ff]/10 hover:bg-[#00f0ff]/20 text-xs font-bold text-[#00f0ff] flex items-center justify-between cursor-pointer transition-colors"
                 >
                   <span className="flex items-center gap-1.5">
                     <Wifi className="w-3.5 h-3.5" />
-                    <span>Reconectar a sala previa: <strong>{savedRoomCode}</strong></span>
+                    <span>Dispositivo vinculado guardado: <strong className="font-mono">{pairedCode}</strong></span>
                   </span>
                   <span>⚡ Conectar</span>
                 </button>
@@ -413,14 +445,14 @@ export function SyncModal({
                       bg-white border-[#121217] outline-none"
                   />
                   <button
-                    onClick={() => connectWithCode(inputCode)}
+                    onClick={() => pairWithDevice(inputCode)}
                     disabled={inputCode.length < 4 || syncStatus === 'connecting'}
                     id="connect-peer-btn"
                     className="btn-spring px-5 py-3 rounded-2xl font-display-title font-bold text-xs uppercase tracking-wider cursor-pointer
                       dark:bg-[#00f0ff] dark:text-black dark:hover:bg-[#05ddff] disabled:opacity-50
                       bg-[#121217] text-white shadow-[2px_2px_0px_#121217] disabled:shadow-none"
                   >
-                    {syncStatus === 'connecting' ? 'Conectando...' : 'Sincronizar'}
+                    {syncStatus === 'connecting' ? 'Vinculando...' : 'Vincular'}
                   </button>
                 </div>
               </div>
