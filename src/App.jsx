@@ -41,8 +41,10 @@ import { CategoryManagerModal } from './components/CategoryManagerModal';
 import { ReserveDetailModal } from './components/ReserveDetailModal';
 import { BalanceBreakdownModal } from './components/BalanceBreakdownModal';
 import { StorageDiagnosticsModal } from './components/StorageDiagnosticsModal';
+import { IncomeExpenseLineChart } from './components/IncomeExpenseLineChart';
+import { CategoryExcelTable } from './components/CategoryExcelTable';
 import { formatCurrency, formatMovementDate } from './utils/formatters';
-import { calculateReserveMetrics, calculateWalletBreakdown } from './utils/budgetCalculations';
+import { calculateReserveMetrics, calculateWalletBreakdown, round2 } from './utils/budgetCalculations';
 
 export function App() {
   const { isDark, toggleTheme } = useTheme();
@@ -90,6 +92,9 @@ export function App() {
 
   // Vista activa: 'balance' | 'reserves' | 'history'
   const [currentView, setCurrentView] = useState('balance');
+
+  // Modo de visualización dentro de Historial: 'feed' (Transacciones) | 'table' (Tabla tipo Excel por categorías)
+  const [historySubView, setHistorySubView] = useState('feed');
 
   // Estados de Modales
   const [isFormOpen, setIsFormOpen] = useState(false);
@@ -409,6 +414,15 @@ export function App() {
                 onOpenAvailableBreakdown={() => handleOpenBreakdown('available')}
               />
 
+              {/* Diagrama de Línea: Evolución de Saldo (Aumentos y Disminuciones) */}
+              <IncomeExpenseLineChart
+                movements={visibleMovements}
+                allMovements={movements}
+                selectedMonthKey={selectedMonthKey}
+                viewMode={viewMode}
+                currency={currency}
+              />
+
               {/* Tarjetas de Acceso Rápido y Resumen Contextual */}
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-1">
                 {/* 1. Resumen Interactivo de Reservas */}
@@ -452,9 +466,7 @@ export function App() {
                           return (
                             <div
                               key={r.id}
-                              onClick={() => setSelectedReserveForDetail(r)}
-                              className="p-2.5 rounded-xl border dark:bg-[#0b0b0e] bg-black/[0.02] border-black/10 dark:border-white/10 flex items-center justify-between gap-2 cursor-pointer hover:border-[#ffd000]/50 transition-colors"
-                              title="Ver detalle e historial"
+                              className="p-2.5 rounded-xl border dark:bg-[#0b0b0e] bg-black/[0.02] border-black/10 dark:border-white/10 flex items-center justify-between gap-2"
                             >
                               <div className="flex items-center gap-2 min-w-0">
                                 <span className="text-lg flex-shrink-0">{r.icon || '🎯'}</span>
@@ -527,9 +539,7 @@ export function App() {
                           return (
                             <div
                               key={m.id}
-                              onClick={() => setEditingMovement(m)}
-                              className="p-2.5 rounded-xl border dark:bg-[#0b0b0e] bg-black/[0.02] border-black/10 dark:border-white/10 flex items-center justify-between gap-2 cursor-pointer hover:border-black/30 dark:hover:border-white/30 transition-colors"
-                              title="Editar movimiento"
+                              className="p-2.5 rounded-xl border dark:bg-[#0b0b0e] bg-black/[0.02] border-black/10 dark:border-white/10 flex items-center justify-between gap-2"
                             >
                               <div className="flex items-center gap-2 min-w-0">
                                 <span className="text-lg flex-shrink-0">{m.icon || (isIngreso ? '💵' : '💸')}</span>
@@ -629,6 +639,7 @@ export function App() {
                 movements={movements}
                 allocations={allocations}
                 currency={currency}
+                walletBreakdown={walletBreakdown}
                 onOpenCreateReserve={handleOpenCreateReserve}
                 onEditReserve={handleEditReserve}
                 onDeleteReserve={handleDeleteReserve}
@@ -641,9 +652,23 @@ export function App() {
                   releaseFromReserve(id, amt, note, wallet);
                   showToast('Fondos liberados a tu saldo disponible.');
                 }}
-                onSpendFromReserve={(res) => {
-                  setPreselectedReserveForMovement(res.id);
-                  setIsFormOpen(true);
+                onSpendFromReserve={(res, amt, wallet, description) => {
+                  if (!amt) {
+                    setPreselectedReserveForMovement(res.id);
+                    setIsFormOpen(true);
+                    return;
+                  }
+                  const safeAmount = round2(amt);
+                  addMovement({
+                    type: 'egreso',
+                    amount: safeAmount,
+                    wallet: wallet || 'cash',
+                    linkedReserveId: res.id,
+                    categoryId: res.categoryId || 'cat_pasajes',
+                    description: description?.trim() || `Gasto de ${res.name}`,
+                    date: new Date().toISOString(),
+                  });
+                  showToast(`Gasto de ${formatCurrency(safeAmount, currency)} pagado con ${res.name}.`);
                 }}
               />
             </motion.div>
@@ -683,28 +708,72 @@ export function App() {
                 </button>
               </div>
 
-              {/* Listado de Transacciones con Filtros Avanzados y Búsqueda */}
-              <MovementFeed
-                movements={visibleMovements}
-                reserves={reserves}
-                categories={categories}
-                currency={currency}
-                searchQuery={searchQuery}
-                filterCategory={filterCategory}
-                filterReserve={filterReserve}
-                filterType={filterType}
-                onSearchChange={setSearchQuery}
-                onFilterCategoryChange={setFilterCategory}
-                onFilterReserveChange={setFilterReserve}
-                onFilterTypeChange={setFilterType}
-                onDeleteMovement={(id) => {
-                  deleteMovement(id);
-                  showToast('Movimiento eliminado.');
-                }}
-                onEditClick={(mov) => setEditingMovement(mov)}
-                onOpenNewMovement={() => setIsFormOpen(true)}
-                viewMode={viewMode}
-              />
+              {/* Selector de Doble Vista: 1. Historial Completo (Feed) vs 2. Tabla por Categorías (Tipo Excel) */}
+              <div className="flex items-center justify-center sm:justify-start">
+                <div className="inline-flex p-1 rounded-2xl border dark:bg-[#121218] bg-white border-black/10 dark:border-white/10 shadow-xs">
+                  <button
+                    type="button"
+                    onClick={() => setHistorySubView('feed')}
+                    className={`px-3 sm:px-3.5 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer ${
+                      historySubView === 'feed'
+                        ? 'dark:bg-[#00ff87] dark:text-black bg-[#121217] text-white shadow-xs'
+                        : 'text-muted hover:text-main'
+                    }`}
+                  >
+                    <span>📋</span>
+                    <span>Historial Completo</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setHistorySubView('table')}
+                    className={`px-3 sm:px-3.5 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer ${
+                      historySubView === 'table'
+                        ? 'dark:bg-[#00ff87] dark:text-black bg-[#121217] text-white shadow-xs'
+                        : 'text-muted hover:text-main'
+                    }`}
+                  >
+                    <span>📊</span>
+                    <span>Tabla por Categorías (Excel)</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* Vista 1: Listado de Transacciones con Filtros Avanzados y Búsqueda */}
+              {historySubView === 'feed' ? (
+                <MovementFeed
+                  movements={visibleMovements}
+                  reserves={reserves}
+                  categories={categories}
+                  currency={currency}
+                  searchQuery={searchQuery}
+                  filterCategory={filterCategory}
+                  filterReserve={filterReserve}
+                  filterType={filterType}
+                  onSearchChange={setSearchQuery}
+                  onFilterCategoryChange={setFilterCategory}
+                  onFilterReserveChange={setFilterReserve}
+                  onFilterTypeChange={setFilterType}
+                  onDeleteMovement={(id) => {
+                    deleteMovement(id);
+                    showToast('Movimiento eliminado.');
+                  }}
+                  onEditClick={(mov) => setEditingMovement(mov)}
+                  onOpenNewMovement={() => setIsFormOpen(true)}
+                  viewMode={viewMode}
+                />
+              ) : (
+                /* Vista 2: Tabla Clasificada por Categorías Tipo Excel con Desglose Sumatorio */
+                <CategoryExcelTable
+                  movements={visibleMovements}
+                  allMovements={movements}
+                  categories={categories}
+                  incomeSources={incomeSources}
+                  currency={currency}
+                  selectedMonthKey={selectedMonthKey}
+                  onEditMovement={(mov) => setEditingMovement(mov)}
+                />
+              )}
             </motion.div>
           )}
         </AnimatePresence>
@@ -886,6 +955,7 @@ export function App() {
           setPreselectedReserveForMovement(null);
         }}
         reserves={reserves}
+        allocations={allocations}
         categories={categories}
         incomeSources={incomeSources}
         currency={currency}
@@ -994,6 +1064,7 @@ export function App() {
         allocations={allocations}
         movements={movements}
         currency={currency}
+        walletBreakdown={walletBreakdown}
         onAllocateFunds={(id, amt, note, wallet) => {
           allocateToReserve(id, amt, note, wallet);
           showToast('Fondos apartados a la reserva.');

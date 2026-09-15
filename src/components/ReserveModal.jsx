@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { X, Check, Target, Calendar, Sparkles, Shield, Bookmark } from 'lucide-react';
-import { RESERVE_TEMPLATES, INITIAL_CATEGORIES } from '../utils/budgetConstants';
+import { RESERVE_TEMPLATES, INITIAL_CATEGORIES, PAYMENT_WALLETS } from '../utils/budgetConstants';
 import { round2 } from '../utils/budgetCalculations';
 import { formatCurrency } from '../utils/formatters';
 
@@ -16,6 +16,7 @@ export function ReserveModal({
   const [name, setName] = useState('');
   const [targetAmount, setTargetAmount] = useState('');
   const [currentAmount, setCurrentAmount] = useState('');
+  const [wallet, setWallet] = useState('cash');
   const [categoryId, setCategoryId] = useState('cat_plan_movil');
   const [frequency, setFrequency] = useState('monthly'); // 'one_time' | 'weekly' | 'monthly' | 'custom_days'
   const [intervalDays, setIntervalDays] = useState('30');
@@ -57,6 +58,7 @@ export function ReserveModal({
       setProtectsBalance(true);
       setIcon('📱');
       setReserveType('spending');
+      setWallet('cash');
     }
   }, [reserveToEdit, isOpen]);
 
@@ -89,6 +91,7 @@ export function ReserveModal({
       categoryId,
       targetAmount: parsedTarget,
       currentAmount: round2(currentAmount) || 0,
+      wallet,
       frequency,
       intervalDays: frequency === 'custom_days' ? parseInt(intervalDays, 10) || 30 : null,
       nextDueDate: nextDueDate || null,
@@ -279,6 +282,32 @@ export function ReserveModal({
                 />
               </div>
             </div>
+
+            {/* Selector de billetera para el monto inicial apartado */}
+            {Number(currentAmount) > 0 && !reserveToEdit && (
+              <div className="p-3 rounded-2xl border dark:bg-[#0b0b0e] bg-black/5 dark:border-white/10 space-y-1.5">
+                <span className="text-[11px] font-bold text-muted uppercase tracking-wider block">
+                  ¿De qué medio apartarás este monto inicial?
+                </span>
+                <div className="grid grid-cols-3 gap-1.5 p-1 rounded-xl border dark:bg-[#13131a] bg-white border-black/10 dark:border-white/15">
+                  {PAYMENT_WALLETS.map((w) => (
+                    <button
+                      key={w.id}
+                      type="button"
+                      onClick={() => setWallet(w.id)}
+                      className={`py-2 px-1.5 rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
+                        wallet === w.id
+                          ? 'dark:bg-[#00ff87]/20 dark:text-[#00ff87] bg-[#121217] text-white shadow-sm'
+                          : 'text-muted hover:text-main'
+                      }`}
+                    >
+                      <span>{w.icon}</span>
+                      <span className="truncate">{w.label}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
 
             {/* Categoría y Prioridad */}
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">

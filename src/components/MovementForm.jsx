@@ -1,11 +1,11 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { X, Calendar, Plus, Sparkles, Check, Bookmark, ShoppingBag, ShieldAlert, Sliders, ChevronDown, ChevronUp } from 'lucide-react';
+import { X, Calendar, Plus, Sparkles, Check, Bookmark, ShoppingBag, ShieldAlert, Sliders, ChevronDown, ChevronUp, Lock } from 'lucide-react';
 import confetti from 'canvas-confetti';
 import { detectAutoIcon, POPULAR_ICONS } from '../utils/autoIcons';
 import { getLocalDateTimeString, formatCurrency } from '../utils/formatters';
 import { INCOME_SOURCES, INITIAL_CATEGORIES, PAYMENT_WALLETS } from '../utils/budgetConstants';
-import { suggestIncomeDistribution, round2 } from '../utils/budgetCalculations';
+import { suggestIncomeDistribution, getReserveWalletTotals, round2 } from '../utils/budgetCalculations';
 
 export function MovementForm({
   isOpen,
@@ -13,6 +13,7 @@ export function MovementForm({
   onSubmit,
   categories = INITIAL_CATEGORIES,
   reserves = [],
+  allocations = [],
   incomeSources = INCOME_SOURCES,
   currency = 'PEN',
   initialLinkedReserveId = null,
@@ -134,8 +135,27 @@ export function MovementForm({
     : 0;
   const actualFlexibleAmount = Math.max(0, round2(netProfit - totalAssignedToReserves));
 
-  // Verificación de sobregasto en egreso vinculado a reserva
+  // Totales de billeteras para la reserva vinculada seleccionada
   const selectedLinkedReserve = reserves.find((r) => r.id === linkedReserveId);
+  const linkedReserveWalletTotals = useMemo(() => {
+    if (!selectedLinkedReserve || type !== 'egreso') return null;
+    return getReserveWalletTotals(selectedLinkedReserve, allocations);
+  }, [selectedLinkedReserve, type, allocations]);
+
+  const validReserveWallets = useMemo(() => {
+    if (!linkedReserveWalletTotals) return [];
+    return PAYMENT_WALLETS.filter((w) => (linkedReserveWalletTotals[w.id] || 0) > 0);
+  }, [linkedReserveWalletTotals]);
+
+  // Si se vincula una reserva con fondos en billeteras específicas, fijar la billetera correcta
+  useEffect(() => {
+    if (type === 'egreso' && validReserveWallets.length > 0) {
+      if (!validReserveWallets.some((w) => w.id === wallet)) {
+        setWallet(validReserveWallets[0].id);
+      }
+    }
+  }, [type, validReserveWallets, wallet]);
+
   const overspentAmount =
     type === 'egreso' && selectedLinkedReserve && numericAmount > selectedLinkedReserve.currentAmount
       ? round2(numericAmount - selectedLinkedReserve.currentAmount)
@@ -331,26 +351,42 @@ export function MovementForm({
 
             {/* Medio de Pago / Billetera */}
             <div>
-              <label className="block text-xs font-bold uppercase tracking-wider text-muted mb-1.5">
-                Medio de Pago / Billetera
-              </label>
+              <div className="flex items-center justify-between mb-1.5">
+                <label className="block text-xs font-bold uppercase tracking-wider text-muted">
+                  Medio de Pago / Billetera
+                </label>
+                {type === 'egreso' && linkedReserveId && validReserveWallets.length > 0 && (
+                  <span className="text-[10px] font-bold text-[#00f0ff] flex items-center gap-1">
+                    <Lock className="w-3 h-3" /> Fija por fondo destinado
+                  </span>
+                )}
+              </div>
               <div className="grid grid-cols-3 gap-2">
-                {PAYMENT_WALLETS.map((w) => (
-                  <button
-                    key={w.id}
-                    type="button"
-                    onClick={() => setWallet(w.id)}
-                    className={`btn-spring py-2 px-2 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 border transition-all cursor-pointer
-                      ${
-                        wallet === w.id
-                          ? 'dark:bg-white/15 bg-black/10 border-black dark:border-white text-main shadow-sm'
-                          : 'border-black/10 dark:border-white/10 text-muted hover:text-main'
-                      }`}
-                  >
-                    <span>{w.icon}</span>
-                    <span className="truncate">{w.label}</span>
-                  </button>
-                ))}
+                {PAYMENT_WALLETS.map((w) => {
+                  const isLockedOut =
+                    type === 'egreso' &&
+                    linkedReserveId &&
+                    validReserveWallets.length > 0 &&
+                    !validReserveWallets.some((vw) => vw.id === w.id);
+                  return (
+                    <button
+                      key={w.id}
+                      type="button"
+                      disabled={isLockedOut}
+                      onClick={() => setWallet(w.id)}
+                      className={`btn-spring py-2 px-2 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 border transition-all cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed
+                        ${
+                          wallet === w.id
+                            ? 'dark:bg-white/15 bg-black/10 border-black dark:border-white text-main shadow-sm'
+                            : 'border-black/10 dark:border-white/10 text-muted hover:text-main'
+                        }`}
+                      title={isLockedOut ? 'Este fondo no tiene dinero en esta billetera' : ''}
+                    >
+                      <span>{w.icon}</span>
+                      <span className="truncate">{w.label}</span>
+                    </button>
+                  );
+                })}
               </div>
             </div>
 

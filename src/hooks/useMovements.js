@@ -296,6 +296,7 @@ export function useMovements() {
       categoryId: reserveData.categoryId || 'cat_pasajes',
       targetAmount: round2(reserveData.targetAmount) || 0,
       currentAmount: round2(reserveData.currentAmount) || 0,
+      wallet: reserveData.wallet || 'cash',
       frequency: reserveData.frequency || 'monthly',
       intervalDays: reserveData.intervalDays ? Number(reserveData.intervalDays) : null,
       nextDueDate: reserveData.nextDueDate || null,
@@ -306,10 +307,25 @@ export function useMovements() {
       updatedAt: nowIso,
     };
 
+    let updatedAllocations = data.allocations || [];
+    if (newReserve.currentAmount > 0) {
+      const initialAlloc = {
+        id: generateUUID ? generateUUID() : `alloc_${Date.now()}_${Math.random().toString(36).substr(2, 7)}`,
+        reserveId: newReserve.id,
+        wallet: reserveData.wallet || 'cash',
+        amount: newReserve.currentAmount,
+        date: nowIso,
+        type: 'assign',
+        note: 'Monto inicial apartado',
+      };
+      updatedAllocations = [initialAlloc, ...updatedAllocations];
+    }
+
     const updatedReserves = [newReserve, ...(data.reserves || [])];
     persist({
       ...data,
       reserves: updatedReserves,
+      allocations: updatedAllocations,
       lastSync: nowIso,
     });
 
@@ -366,6 +382,7 @@ export function useMovements() {
       if (res.id === reserveId) {
         return {
           ...res,
+          wallet: wallet || res.wallet || 'cash',
           currentAmount: round2(res.currentAmount + safeAmount),
           updatedAt: nowIso,
         };

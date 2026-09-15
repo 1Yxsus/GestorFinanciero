@@ -8,6 +8,7 @@ import {
   getUpcomingPayment,
   generateBudgetAlerts,
   calculateWalletBreakdown,
+  getReserveWalletTotals,
 } from './budgetCalculations';
 
 describe('Casos de aceptación de implementation.md y Motor Financiero', () => {
@@ -369,6 +370,71 @@ describe('Casos de aceptación de implementation.md y Motor Financiero', () => {
       expect(breakdown.totalReservado).toBe(50);
       expect(breakdown.totalDisponible).toBe(50);
     });
+
+    it('Caso usuario: Pasajes apartado en Efectivo no afecta a Yape ni al apartar, ni al gastar, ni al liberar', () => {
+      // Reserva Pasajes con 38 apartado en efectivo
+      const pasajes = {
+        id: 'res_pasajes',
+        name: 'Pasajes',
+        targetAmount: 48,
+        currentAmount: 38,
+        wallet: 'cash',
+      };
+
+      const allocations = [
+        { id: 'a1', reserveId: 'res_pasajes', amount: 38, wallet: 'cash', type: 'assign' },
+      ];
+
+      // getReserveWalletTotals debe reportar exactamente 38 en efectivo y 0 en Yape
+      const totals = getReserveWalletTotals(pasajes, allocations);
+      expect(totals.cash).toBe(38);
+      expect(totals.yape_plin).toBe(0);
+      expect(totals.bank).toBe(0);
+
+      // Movimientos: 100 en efectivo, 100 en Yape
+      const movements = [
+        { id: 'm1', type: 'ingreso', amount: 100, wallet: 'cash' },
+        { id: 'm2', type: 'ingreso', amount: 100, wallet: 'yape_plin' },
+      ];
+
+      const bdBeforeSpend = calculateWalletBreakdown({
+        movements,
+        allocations,
+        reserves: [pasajes],
+        totalReservado: 38,
+      });
+
+      expect(bdBeforeSpend.wallets.cash.balance).toBe(100);
+      expect(bdBeforeSpend.wallets.cash.reserved).toBe(38);
+      expect(bdBeforeSpend.wallets.cash.available).toBe(62);
+
+      // Yape permanece 100% libre e intacto:
+      expect(bdBeforeSpend.wallets.yape_plin.balance).toBe(100);
+      expect(bdBeforeSpend.wallets.yape_plin.reserved).toBe(0);
+      expect(bdBeforeSpend.wallets.yape_plin.available).toBe(100);
+
+      // Ahora el usuario gasta 10 de Pasajes en Efectivo:
+      const spendMovement = { id: 'm_spend', type: 'egreso', amount: 10, wallet: 'cash', linkedReserveId: 'res_pasajes' };
+      const spendAlloc = { id: 'a_spend', reserveId: 'res_pasajes', transactionId: 'm_spend', amount: 10, wallet: 'cash', type: 'consume' };
+      const pasajesAfterSpend = { ...pasajes, currentAmount: 28 };
+
+      const bdAfterSpend = calculateWalletBreakdown({
+        movements: [spendMovement, ...movements],
+        allocations: [spendAlloc, ...allocations],
+        reserves: [pasajesAfterSpend],
+        totalReservado: 28,
+      });
+
+      // Efectivo balance baja a 90, reservado baja a 28, disponible sigue en 62
+      expect(bdAfterSpend.wallets.cash.balance).toBe(90);
+      expect(bdAfterSpend.wallets.cash.reserved).toBe(28);
+      expect(bdAfterSpend.wallets.cash.available).toBe(62);
+
+      // Yape sigue totalmente intacto en 100 sin ninguna fuga ni distribución
+      expect(bdAfterSpend.wallets.yape_plin.balance).toBe(100);
+      expect(bdAfterSpend.wallets.yape_plin.reserved).toBe(0);
+      expect(bdAfterSpend.wallets.yape_plin.available).toBe(100);
+    });
   });
 
   describe('Métricas intuitivas para fondos de gasto continuo (Pasajes, alimentación, plan)', () => {
@@ -428,6 +494,78 @@ describe('Casos de aceptación de implementation.md y Motor Financiero', () => {
       expect(metrics.isSpendingFund).toBe(false);
       expect(metrics.faltante).toBe(1500.00);
       expect(metrics.progreso).toBe(25);
+    });
+  });
+
+  describe('Prevención de reparto equitativo espurio al apartar en una sola billetera', () => {
+    it('Caso usuario: Plan móvil con consumo previo no reparte equitativamente 50/50 al apartar en Efectivo', () => {
+      const planMovil = {
+        id: 'res_plan_movil_test',
+        name: 'Plan móvil mensual',
+        categoryId: 'cat_plan_movil',
+        targetAmount: 29.00,
+        currentAmount: 10.00,
+        wallet: 'cash',
+      };
+
+      // Historial: Se apartó 10 en Yape, luego se gastó 10 (con wallet 'cash' o 'yape_plin'),
+      // y finalmente el usuario aparta 10 en Efectivo:
+      const allocations = [
+        { id: 'a1', reserveId: 'res_plan_movil_test', amount: 10.00, wallet: 'yape_plin', type: 'assign', date: '2026-09-10T10:00:00Z' },
+        { id: 'a2', reserveId: 'res_plan_movil_test', amount: 10.00, wallet: 'cash', type: 'consume', date: '2026-09-11T10:00:00Z' },
+        { id: 'a3', reserveId: 'res_plan_movil_test', amount: 10.00, wallet: 'cash', type: 'assign', date: '2026-09-14T20:00:00Z' },
+      ];
+
+      const totals = getReserveWalletTotals(planMovil, allocations);
+
+      // DEBE ser exactamente S/ 10.00 en Efectivo y S/ 0.00 en Yape (NO 50/50 ni S/ 5 y S/ 5)
+      expect(totals.cash).toBe(10.00);
+      expect(totals.yape_plin).toBe(0.00);
+      expect(totals.bank).toBe(0.00);
+
+      // En el breakdown global, Efectivo reservado debe ser 10 y Yape reservado 0
+      const movements = [
+        { id: 'm1', type: 'ingreso', amount: 100, wallet: 'cash' },
+        { id: 'm2', type: 'ingreso', amount: 100, wallet: 'yape_plin' },
+      ];
+
+      const bd = calculateWalletBreakdown({
+        movements,
+        allocations,
+        reserves: [planMovil],
+        totalReservado: 10.00,
+      });
+
+      expect(bd.wallets.cash.reserved).toBe(10.00);
+      expect(bd.wallets.cash.available).toBe(90.00);
+      expect(bd.wallets.yape_plin.reserved).toBe(0.00);
+      expect(bd.wallets.yape_plin.available).toBe(100.00);
+    });
+
+    it('Caso usuario Británico: Aportes y liberaciones alternadas terminan asignadas 100% a la billetera activa', () => {
+      const britanico = {
+        id: 'res_britanico_test',
+        name: 'Británico',
+        categoryId: 'cat_estudios',
+        targetAmount: 275.00,
+        currentAmount: 50.00,
+        wallet: 'cash',
+      };
+
+      const allocations = [
+        { id: 'b1', reserveId: 'res_britanico_test', amount: 50.00, wallet: 'yape_plin', type: 'assign', date: '2026-09-10T10:00:00Z' },
+        { id: 'b2', reserveId: 'res_britanico_test', amount: 50.00, wallet: 'cash', type: 'release', date: '2026-09-11T10:00:00Z' },
+        { id: 'b3', reserveId: 'res_britanico_test', amount: 50.00, wallet: 'yape_plin', type: 'assign', date: '2026-09-12T10:00:00Z' },
+        { id: 'b4', reserveId: 'res_britanico_test', amount: 50.00, wallet: 'cash', type: 'release', date: '2026-09-13T10:00:00Z' },
+        { id: 'b5', reserveId: 'res_britanico_test', amount: 50.00, wallet: 'cash', type: 'assign', date: '2026-09-14T10:00:00Z' },
+      ];
+
+      const totals = getReserveWalletTotals(britanico, allocations);
+
+      // DEBE ser 50 en Efectivo y 0 en Yape (NO 16.67 y 33.33)
+      expect(totals.cash).toBe(50.00);
+      expect(totals.yape_plin).toBe(0.00);
+      expect(totals.bank).toBe(0.00);
     });
   });
 });

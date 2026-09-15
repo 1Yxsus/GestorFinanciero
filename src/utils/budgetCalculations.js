@@ -529,6 +529,97 @@ export function generateBudgetAlerts({
 }
 
 /**
+ * Obtiene los totales de dinero apartado por billetera para una reserva específica.
+ * Garantiza consistencia estricta por orden cronológico, consumo cruzado si una billetera
+ * queda sin fondos, y reconciliación sin repartos espurios entre billeteras no seleccionadas.
+ */
+export function getReserveWalletTotals(reserve, allocations = []) {
+  if (!reserve) return { cash: 0, yape_plin: 0, bank: 0 };
+  const totals = { cash: 0, yape_plin: 0, bank: 0 };
+
+  // 1. Ordenar cronológicamente ascendente (del más antiguo al más reciente)
+  const reserveAllocs = (allocations || [])
+    .filter((a) => a && a.reserveId === reserve.id && !a.deletedAt)
+    .sort((a, b) => {
+      const timeA = a.date ? new Date(a.date).getTime() : 0;
+      const timeB = b.date ? new Date(b.date).getTime() : 0;
+      return timeA - timeB;
+    });
+
+  // 2. Procesar asignaciones, consumos y liberaciones
+  for (const a of reserveAllocs) {
+    const amt = round2(a.amount);
+    if (amt <= 0) continue;
+    const w = a.wallet && totals[a.wallet] !== undefined ? a.wallet : 'cash';
+
+    if (a.type === 'assign') {
+      totals[w] = round2(totals[w] + amt);
+    } else if (a.type === 'consume' || a.type === 'release') {
+      let toDeduct = amt;
+      // Primero descontar de la billetera indicada si tiene saldo
+      if (totals[w] > 0) {
+        const deduct = Math.min(totals[w], toDeduct);
+        totals[w] = round2(totals[w] - deduct);
+        toDeduct = round2(toDeduct - deduct);
+      }
+      // Si la billetera indicada no tenía suficiente saldo acumulado (ej. egreso registrado
+      // con otro medio de pago o desfase en versiones previas), descontar del saldo real
+      // disponible en las demás billeteras de esta reserva
+      if (toDeduct > 0) {
+        for (const otherW of ['cash', 'yape_plin', 'bank']) {
+          if (toDeduct <= 0) break;
+          if (totals[otherW] > 0) {
+            const deduct = Math.min(totals[otherW], toDeduct);
+            totals[otherW] = round2(totals[otherW] - deduct);
+            toDeduct = round2(toDeduct - deduct);
+          }
+        }
+      }
+    }
+  }
+
+  const current = Math.max(0, round2(reserve.currentAmount || 0));
+  if (current <= 0) {
+    return { cash: 0, yape_plin: 0, bank: 0 };
+  }
+
+  const sum = round2(totals.cash + totals.yape_plin + totals.bank);
+  if (sum === 0) {
+    const fallback = reserve.wallet && totals[reserve.wallet] !== undefined ? reserve.wallet : 'cash';
+    totals[fallback] = current;
+    return totals;
+  }
+
+  // 3. Reconciliación con currentAmount si hubo desajuste externo sin asignaciones
+  if (current > sum) {
+    const diff = round2(current - sum);
+    // Si la reserva tiene una billetera fijada explícita o solo una billetera activa,
+    // asignarle el remanente a esa billetera sin contaminar las otras
+    const activeWallets = ['cash', 'yape_plin', 'bank'].filter((k) => totals[k] > 0);
+    const targetW =
+      reserve.wallet && totals[reserve.wallet] !== undefined
+        ? reserve.wallet
+        : activeWallets.length === 1
+        ? activeWallets[0]
+        : 'cash';
+    totals[targetW] = round2(totals[targetW] + diff);
+  } else if (current < sum) {
+    // Si el monto actual disminuyó y solo 1 billetera tenía fondos, se ajusta directamente esa
+    const activeWallets = ['cash', 'yape_plin', 'bank'].filter((k) => totals[k] > 0);
+    if (activeWallets.length === 1) {
+      totals[activeWallets[0]] = current;
+    } else {
+      const scale = current / sum;
+      totals.cash = round2(totals.cash * scale);
+      totals.yape_plin = round2(totals.yape_plin * scale);
+      totals.bank = Math.max(0, round2(current - totals.cash - totals.yape_plin));
+    }
+  }
+
+  return totals;
+}
+
+/**
  * Calcula el desglose de dinero por billetera / medio de pago:
  * Efectivo ('cash'), Yape / Plin ('yape_plin'), Cuenta Bancaria ('bank').
  * Asigna con precisión las reservas a la billetera de origen (efectivo, yape o banco)
@@ -581,74 +672,71 @@ export function calculateWalletBreakdown({
   const safeReservado = Math.max(0, round2(totalReservado));
   const totalDisponible = Math.max(0, round2(totalBalance - safeReservado));
 
-  // 1. Rastrear reservas asignadas por cada billetera a partir de asignaciones registradas
-  const processedTransactionIds = new Set();
+  // 1. Rastrear reservas asignadas por cada billetera de manera aislada y consistente
+  const activeReserves = (reserves || []).filter((r) => r && r.active !== false && !r.deletedAt);
 
-  if (Array.isArray(allocations) && allocations.length > 0) {
-    for (const alloc of allocations) {
-      const amt = round2(alloc.amount);
-      if (amt <= 0) continue;
+  if (activeReserves.length > 0) {
+    for (const res of activeReserves) {
+      const resCurrent = Math.max(0, round2(res.currentAmount || 0));
+      if (resCurrent <= 0) continue;
 
-      let wKey = alloc.wallet;
-      if (!wKey && alloc.transactionId) {
-        const linked = movMap.get(alloc.transactionId);
-        if (linked) wKey = linked.wallet;
+      const resTotals = getReserveWalletTotals(res, allocations);
+      wallets.cash.reserved = round2(wallets.cash.reserved + resTotals.cash);
+      wallets.yape_plin.reserved = round2(wallets.yape_plin.reserved + resTotals.yape_plin);
+      wallets.bank.reserved = round2(wallets.bank.reserved + resTotals.bank);
+    }
+  } else {
+    // Modo compatibilidad sin lista de reservas
+    const processedTransactionIds = new Set();
+    if (Array.isArray(allocations) && allocations.length > 0) {
+      for (const alloc of allocations) {
+        const amt = round2(alloc.amount);
+        if (amt <= 0) continue;
+
+        let wKey = alloc.wallet;
+        if (!wKey && alloc.transactionId) {
+          const linked = movMap.get(alloc.transactionId);
+          if (linked) wKey = linked.wallet;
+        }
+        if (!wallets[wKey]) wKey = 'cash';
+
+        if (alloc.transactionId) processedTransactionIds.add(alloc.transactionId);
+
+        if (alloc.type === 'assign') {
+          wallets[wKey].reserved = round2(wallets[wKey].reserved + amt);
+        } else if (alloc.type === 'consume' || alloc.type === 'release') {
+          wallets[wKey].reserved = Math.max(0, round2(wallets[wKey].reserved - amt));
+        }
       }
-      if (!wallets[wKey]) wKey = 'cash';
+    }
 
-      if (alloc.transactionId) {
-        processedTransactionIds.add(alloc.transactionId);
-      }
+    for (const mov of movements) {
+      if (processedTransactionIds.has(mov.id)) continue;
+      const wKey = wallets[mov.wallet] ? mov.wallet : 'cash';
+      const amt = round2(mov.amount);
 
-      if (alloc.type === 'assign') {
-        wallets[wKey].reserved = round2(wallets[wKey].reserved + amt);
-      } else if (alloc.type === 'consume' || alloc.type === 'release') {
+      if (isIncome(mov)) {
+        if (Array.isArray(mov.allocationsToApply) && mov.allocationsToApply.length > 0) {
+          const assignedTotal = mov.allocationsToApply.reduce((s, a) => s + (round2(a.amount) || 0), 0);
+          wallets[wKey].reserved = round2(wallets[wKey].reserved + assignedTotal);
+        } else if (mov.isRestricted && mov.restrictedReserveId) {
+          wallets[wKey].reserved = round2(wallets[wKey].reserved + amt);
+        }
+      } else if (isExpense(mov) && mov.linkedReserveId) {
         wallets[wKey].reserved = Math.max(0, round2(wallets[wKey].reserved - amt));
       }
     }
-  }
 
-  // 2. Rastrear movimientos que apartaron dinero a reserva directamente si no estaban en allocations
-  for (const mov of movements) {
-    if (processedTransactionIds.has(mov.id)) continue;
-    const wKey = wallets[mov.wallet] ? mov.wallet : 'cash';
-    const amt = round2(mov.amount);
+    let trackedReservedTotal = Object.values(wallets).reduce((s, w) => s + w.reserved, 0);
+    trackedReservedTotal = round2(trackedReservedTotal);
 
-    if (isIncome(mov)) {
-      if (Array.isArray(mov.allocationsToApply) && mov.allocationsToApply.length > 0) {
-        const assignedTotal = mov.allocationsToApply.reduce((s, a) => s + (round2(a.amount) || 0), 0);
-        wallets[wKey].reserved = round2(wallets[wKey].reserved + assignedTotal);
-      } else if (mov.isRestricted && mov.restrictedReserveId) {
-        wallets[wKey].reserved = round2(wallets[wKey].reserved + amt);
+    if (trackedReservedTotal > safeReservado && trackedReservedTotal > 0) {
+      const ratio = safeReservado / trackedReservedTotal;
+      for (const key of Object.keys(wallets)) {
+        wallets[key].reserved = round2(wallets[key].reserved * ratio);
       }
-    } else if (isExpense(mov) && mov.linkedReserveId) {
-      wallets[wKey].reserved = Math.max(0, round2(wallets[wKey].reserved - amt));
-    }
-  }
-
-  // 3. Conciliar con el total reservado real activo
-  let trackedReservedTotal = Object.values(wallets).reduce((s, w) => s + w.reserved, 0);
-  trackedReservedTotal = round2(trackedReservedTotal);
-
-  if (trackedReservedTotal > safeReservado && trackedReservedTotal > 0) {
-    // Si lo rastreado excede el total activo (por ejemplo, si se editó o borró una reserva), ajustar a escala
-    const ratio = safeReservado / trackedReservedTotal;
-    for (const key of Object.keys(wallets)) {
-      wallets[key].reserved = round2(wallets[key].reserved * ratio);
-    }
-  } else if (safeReservado > trackedReservedTotal) {
-    // Si hay reservas no asociadas directamente a una transacción (ej. reservas creadas con saldo previo)
-    // se descuenta primero del saldo libre de las billeteras que tengan disponible
-    let unassigned = round2(safeReservado - trackedReservedTotal);
-    for (const key of ['cash', 'yape_plin', 'bank']) {
-      if (unassigned <= 0) break;
-      const w = wallets[key];
-      const maxCanReserve = Math.max(0, round2(w.balance - w.reserved));
-      const toTake = Math.min(unassigned, maxCanReserve);
-      w.reserved = round2(w.reserved + toTake);
-      unassigned = round2(unassigned - toTake);
-    }
-    if (unassigned > 0) {
+    } else if (safeReservado > trackedReservedTotal) {
+      let unassigned = round2(safeReservado - trackedReservedTotal);
       wallets.cash.reserved = round2(wallets.cash.reserved + unassigned);
     }
   }

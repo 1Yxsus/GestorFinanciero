@@ -14,8 +14,9 @@ import {
   History,
   ShieldCheck,
   AlertTriangle,
+  Lock,
 } from 'lucide-react';
-import { calculateReserveMetrics } from '../utils/budgetCalculations';
+import { calculateReserveMetrics, getReserveWalletTotals, round2 } from '../utils/budgetCalculations';
 import { formatCurrency, formatMovementDate } from '../utils/formatters';
 import { PAYMENT_WALLETS } from '../utils/budgetConstants';
 
@@ -26,12 +27,13 @@ export function ReserveDetailModal({
   allocations = [],
   movements = [],
   currency = 'PEN',
+  walletBreakdown,
   onAllocateFunds,
   onReleaseFunds,
   onEditReserve,
 }) {
   const [actionType, setActionType] = useState(null); // 'deposit' | 'release' | null
-  const [actionAmount, setActionAmount] = useState('');
+  const [actionAmount, setActionAmount] = useState(0);
   const [actionNote, setActionNote] = useState('');
   const [actionWallet, setActionWallet] = useState('cash');
 
@@ -43,6 +45,9 @@ export function ReserveDetailModal({
 
   // Filtrar asignaciones correspondientes a esta reserva
   const reserveAllocations = (allocations || []).filter((a) => a.reserveId === reserve.id);
+
+  // Calcular desglose por billetera exacto para esta reserva
+  const walletTotals = getReserveWalletTotals(reserve, allocations);
 
   // Cálculo de ritmo si tiene fecha de vencimiento
   let rhythmInfo = null;
@@ -197,6 +202,35 @@ export function ReserveDetailModal({
             </div>
           </div>
 
+          {/* Desglose de medios apartados en la reserva */}
+          {metrics.current > 0 && (walletTotals.cash > 0 || walletTotals.yape_plin > 0 || walletTotals.bank > 0) && (
+            <div className="flex items-center justify-between p-2.5 px-3 rounded-xl border dark:bg-[#0b0b0e] bg-black/[0.03] border-black/10 dark:border-white/10 mb-4 text-xs">
+              <span className="text-[11px] font-bold text-muted uppercase tracking-wider">
+                Apartado por medio:
+              </span>
+              <div className="flex items-center gap-2.5 flex-wrap font-bold font-mono-num text-[11px]">
+                {walletTotals.cash > 0 && (
+                  <span className="flex items-center gap-1 text-main">
+                    <span>💵</span>
+                    <span>{formatCurrency(walletTotals.cash, currency)}</span>
+                  </span>
+                )}
+                {walletTotals.yape_plin > 0 && (
+                  <span className="flex items-center gap-1 text-[#00f0ff] dark:text-[#00f0ff]">
+                    <span>📱</span>
+                    <span>{formatCurrency(walletTotals.yape_plin, currency)}</span>
+                  </span>
+                )}
+                {walletTotals.bank > 0 && (
+                  <span className="flex items-center gap-1 text-[#ffd000] dark:text-[#ffd000]">
+                    <span>💳</span>
+                    <span>{formatCurrency(walletTotals.bank, currency)}</span>
+                  </span>
+                )}
+              </div>
+            </div>
+          )}
+
           {/* Barra de Progreso */}
           <div className="p-3.5 rounded-2xl border dark:bg-[#0b0b0e] bg-black/[0.02] border-black/10 dark:border-white/10 mb-4">
             <div className="flex items-center justify-between text-xs font-bold mb-1.5">
@@ -280,73 +314,242 @@ export function ReserveDetailModal({
                 <span>Liberar a Disponible</span>
               </button>
             </div>
-          ) : (
-            /* Sub-formulario de acción */
-            <form onSubmit={handleActionSubmit} className="p-3.5 rounded-2xl border dark:bg-[#0b0b0e] bg-black/5 dark:border-white/10 space-y-3 mb-5">
-              <div className="flex items-center justify-between">
-                <span className="text-xs font-bold text-main">
-                  {actionType === 'deposit' ? '📥 Apartar fondos a esta reserva' : '📤 Liberar fondos a tu saldo disponible'}
-                </span>
-                <button
-                  type="button"
-                  onClick={() => setActionType(null)}
-                  className="text-xs text-muted hover:text-main"
-                >
-                  Cancelar
-                </button>
-              </div>
+          ) : (() => {
+            const validWallets = PAYMENT_WALLETS.filter((w) => (walletTotals[w.id] || 0) > 0);
+            const targetDefined = Number(reserve.targetAmount) || 0;
+            const currentInReserve = Number(reserve.currentAmount) || 0;
+            const faltante = Math.max(0, round2(targetDefined - currentInReserve));
+            const walletAvailable = Math.max(0, walletBreakdown?.wallets?.[actionWallet]?.available || 0);
 
-              <div className="grid grid-cols-2 gap-2">
-                <input
-                  type="number"
-                  step="any"
-                  placeholder="Monto (S/)"
-                  required
-                  autoFocus
-                  value={actionAmount}
-                  onChange={(e) => setActionAmount(e.target.value)}
-                  className="px-3 py-2 rounded-xl text-xs font-bold border dark:bg-[#13131a] bg-white dark:border-white/15 border-black/20 outline-none font-num"
-                />
+            let rangeMax = 0;
+            if (actionType === 'deposit') {
+              const maxNeeded = targetDefined > 0 ? (faltante > 0 ? faltante : targetDefined) : walletAvailable;
+              rangeMax = Math.min(walletAvailable, maxNeeded);
+            } else {
+              rangeMax = Math.max(0, walletTotals[actionWallet] || reserve.currentAmount || 0);
+            }
+
+            const selectedWalletObj = PAYMENT_WALLETS.find((w) => w.id === actionWallet) || PAYMENT_WALLETS[0];
+
+            return (
+              /* Sub-formulario de acción con Slider Range y Escritura Directa */
+              <form onSubmit={handleActionSubmit} className="p-3.5 rounded-2xl border dark:bg-[#0b0b0e] bg-black/5 dark:border-white/10 space-y-3 mb-5">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-bold text-main">
+                    {actionType === 'deposit' ? '📥 Apartar fondos a esta reserva' : '📤 Liberar fondos a tu saldo disponible'}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setActionType(null)}
+                    className="text-xs text-muted hover:text-main cursor-pointer"
+                  >
+                    Cancelar
+                  </button>
+                </div>
+
+                {/* Billetera */}
+                {actionType === 'deposit' ? (
+                  <div className="space-y-1">
+                    <span className="text-[10px] font-bold text-muted uppercase">
+                      ¿De qué medio apartarás el dinero?
+                    </span>
+                    <div className="grid grid-cols-3 gap-1.5 p-1 rounded-xl border dark:bg-[#13131a] bg-white border-black/10 dark:border-white/15">
+                      {PAYMENT_WALLETS.map((w) => (
+                        <button
+                          key={w.id}
+                          type="button"
+                          onClick={() => {
+                            setActionWallet(w.id);
+                            const newAvail = walletBreakdown?.wallets?.[w.id]?.available || 0;
+                            const newNeeded = targetDefined > 0 ? (faltante > 0 ? faltante : targetDefined) : newAvail;
+                            const newMax = Math.min(newAvail, newNeeded);
+                            setActionAmount((prev) => Math.min(prev, newMax));
+                          }}
+                          className={`py-1.5 px-2 rounded-lg text-[11px] font-bold flex items-center justify-center gap-1 transition-all cursor-pointer ${
+                            actionWallet === w.id
+                              ? 'dark:bg-white/20 bg-black/10 text-main shadow-sm'
+                              : 'text-muted hover:text-main'
+                          }`}
+                        >
+                          <span>{w.icon}</span>
+                          <span className="truncate">{w.label}</span>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                ) : (
+                  <div className="space-y-1">
+                    <span className="text-[10px] font-bold text-muted uppercase flex items-center gap-1">
+                      <Lock className="w-3 h-3 text-[#00f0ff]" /> Billetera de origen
+                    </span>
+                    {validWallets.length <= 1 ? (
+                      <div className="p-2.5 rounded-xl border dark:bg-[#13131a] bg-white border-black/10 dark:border-white/15 flex items-center justify-between text-xs font-bold">
+                        <div className="flex items-center gap-1.5">
+                          <span>{selectedWalletObj.icon}</span>
+                          <span className="text-main">{selectedWalletObj.label}</span>
+                        </div>
+                        <span className="text-[#00f0ff] font-num">{formatCurrency(rangeMax, currency)} apartados</span>
+                      </div>
+                    ) : (
+                      <div className="grid grid-cols-2 gap-1.5 p-1 rounded-xl border dark:bg-[#13131a] bg-white border-black/10 dark:border-white/15">
+                        {validWallets.map((w) => (
+                          <button
+                            key={w.id}
+                            type="button"
+                            onClick={() => {
+                              setActionWallet(w.id);
+                              setActionAmount(walletTotals[w.id] || 0);
+                            }}
+                            className={`py-1.5 px-2 rounded-lg text-[11px] font-bold flex items-center justify-between gap-1 transition-all cursor-pointer ${
+                              actionWallet === w.id
+                                ? 'dark:bg-white/20 bg-black/10 text-main shadow-sm'
+                                : 'text-muted hover:text-main'
+                            }`}
+                          >
+                            <span>{w.icon} {w.label}</span>
+                            <span className="font-num">{formatCurrency(walletTotals[w.id] || 0, currency)}</span>
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Monto editable y Range Slider */}
+                <div className="py-2 text-center space-y-2">
+                  <div className="inline-flex items-center justify-center gap-1 px-3 py-1 rounded-xl border border-black/10 dark:border-white/10 dark:bg-[#13131a] bg-white focus-within:border-[#00ff87] transition-all">
+                    <span className="text-xl sm:text-2xl font-black text-muted font-num select-none">
+                      {currency === 'PEN' ? 'S/' : currency === 'USD' ? '$' : '€'}
+                    </span>
+                    <input
+                      type="number"
+                      step="any"
+                      min="0"
+                      max={rangeMax}
+                      value={actionAmount === 0 ? '' : actionAmount}
+                      placeholder="0.00"
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        if (val === '') {
+                          setActionAmount(0);
+                        } else {
+                          const num = parseFloat(val);
+                          if (!isNaN(num)) {
+                            setActionAmount(Math.min(rangeMax, Math.max(0, round2(num))));
+                          }
+                        }
+                      }}
+                      className="w-32 sm:w-40 text-center text-2xl sm:text-3xl font-black font-num text-main bg-transparent outline-none focus:outline-none"
+                    />
+                  </div>
+
+                  <div className="text-xs text-muted font-medium">
+                    {actionType === 'deposit' && (
+                      <span>
+                        {targetDefined > 0 && (
+                          <span className="block text-[10px] font-semibold text-main mb-0.5">
+                            Meta definida: {formatCurrency(targetDefined, currency)}
+                            {faltante > 0 ? ` (Faltan ${formatCurrency(faltante, currency)})` : ' (Meta cubierta)'}
+                          </span>
+                        )}
+                        <span>
+                          Disponible en {selectedWalletObj.label}:{' '}
+                          <strong className="text-main">{formatCurrency(walletAvailable, currency)}</strong>
+                        </span>
+                      </span>
+                    )}
+                    {actionType === 'release' && (
+                      <span>
+                        Liberarás a saldo libre de {selectedWalletObj.label}:{' '}
+                        <strong className="text-main">{formatCurrency(actionAmount, currency)}</strong>
+                      </span>
+                    )}
+                  </div>
+
+                  {rangeMax > 0 ? (
+                    <div className="space-y-2 pt-1">
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          disabled={actionAmount <= 0}
+                          onClick={() => setActionAmount((prev) => Math.max(0, round2(prev - 1)))}
+                          className="w-7 h-7 rounded-lg border border-black/10 dark:border-white/10 dark:bg-white/5 bg-black/5 font-bold text-xs flex items-center justify-center cursor-pointer shrink-0"
+                        >
+                          -1
+                        </button>
+
+                        <input
+                          type="range"
+                          min="0"
+                          max={rangeMax}
+                          step={rangeMax > 30 ? 1 : 0.5}
+                          value={actionAmount}
+                          onChange={(e) => setActionAmount(parseFloat(e.target.value) || 0)}
+                          className="w-full h-2 rounded-lg appearance-none cursor-pointer bg-black/10 dark:bg-white/15"
+                          style={{
+                            accentColor: actionType === 'deposit' ? '#00ff87' : '#ffd000',
+                          }}
+                        />
+
+                        <button
+                          type="button"
+                          disabled={actionAmount >= rangeMax}
+                          onClick={() => setActionAmount((prev) => Math.min(rangeMax, round2(prev + 1)))}
+                          className="w-7 h-7 rounded-lg border border-black/10 dark:border-white/10 dark:bg-white/5 bg-black/5 font-bold text-xs flex items-center justify-center cursor-pointer shrink-0"
+                        >
+                          +1
+                        </button>
+                      </div>
+
+                      <div className="grid grid-cols-4 gap-1">
+                        {[0.25, 0.5, 0.75, 1].map((ratio) => {
+                          const val = round2(rangeMax * ratio);
+                          return (
+                            <button
+                              key={ratio}
+                              type="button"
+                              onClick={() => setActionAmount(val)}
+                              className="py-1 rounded-md text-[10px] font-bold border border-black/10 dark:border-white/10 text-muted hover:text-main cursor-pointer"
+                            >
+                              {ratio === 1 ? 'Todo' : `${ratio * 100}%`}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="p-2.5 rounded-xl border border-[#ffd000]/30 dark:bg-[#ffd000]/10 bg-[#ffd000]/10 text-xs font-semibold text-center text-[#b45309] dark:text-[#ffd000]">
+                      {actionType === 'deposit'
+                        ? (walletAvailable <= 0
+                            ? 'No tienes saldo disponible en esta billetera para apartar.'
+                            : 'Ya completaste el monto total definido para esta reserva.')
+                        : 'Esta reserva no tiene fondos en esta billetera.'}
+                    </div>
+                  )}
+                </div>
+
                 <input
                   type="text"
                   placeholder="Motivo / Nota (opcional)"
                   value={actionNote}
                   onChange={(e) => setActionNote(e.target.value)}
-                  className="px-3 py-2 rounded-xl text-xs font-semibold border dark:bg-[#13131a] bg-white dark:border-white/15 border-black/20 outline-none"
+                  className="w-full px-3 py-2 rounded-xl text-xs font-semibold border dark:bg-[#13131a] bg-white dark:border-white/15 border-black/20 outline-none"
                 />
-              </div>
 
-              <div className="space-y-1">
-                <span className="text-[10px] font-bold text-muted uppercase">
-                  {actionType === 'deposit' ? '¿De qué medio apartarás el dinero?' : '¿A qué medio liberarás el dinero?'}
-                </span>
-                <div className="grid grid-cols-3 gap-1.5 p-1 rounded-xl border dark:bg-[#13131a] bg-white border-black/10 dark:border-white/15">
-                  {PAYMENT_WALLETS.map((w) => (
-                    <button
-                      key={w.id}
-                      type="button"
-                      onClick={() => setActionWallet(w.id)}
-                      className={`py-1.5 px-2 rounded-lg text-[11px] font-bold flex items-center justify-center gap-1 transition-all cursor-pointer ${
-                        actionWallet === w.id
-                          ? 'dark:bg-white/20 bg-black/10 text-main shadow-sm'
-                          : 'text-muted hover:text-main'
-                      }`}
-                    >
-                      <span>{w.icon}</span>
-                      <span className="truncate">{w.label}</span>
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              <button
-                type="submit"
-                className="btn-spring w-full py-2 rounded-xl text-xs font-bold dark:bg-[#00ff87] dark:text-black bg-[#121217] text-white"
-              >
-                Confirmar {actionType === 'deposit' ? 'Apartado' : 'Liberación'}
-              </button>
-            </form>
-          )}
+                <button
+                  type="submit"
+                  disabled={actionAmount <= 0}
+                  className={`btn-spring w-full py-2.5 rounded-xl text-xs font-bold transition-all disabled:opacity-40 cursor-pointer ${
+                    actionType === 'deposit'
+                      ? 'dark:bg-[#00ff87] dark:text-black bg-[#121217] text-white'
+                      : 'dark:bg-[#ffd000] dark:text-black bg-[#121217] text-white'
+                  }`}
+                >
+                  Confirmar {actionType === 'deposit' ? 'Apartado' : 'Liberación'} ({formatCurrency(actionAmount, currency)})
+                </button>
+              </form>
+            );
+          })()}
 
           {/* HISTORIAL DE MOVIMIENTOS Y AUDITORÍA DE LA RESERVA */}
           <div className="space-y-2">
@@ -366,13 +569,14 @@ export function ReserveDetailModal({
                 {reserveAllocations.map((item) => {
                   const isAssign = item.type === 'assign';
                   const isConsume = item.type === 'consume';
+                  const itemWallet = PAYMENT_WALLETS.find((w) => w.id === item.wallet) || PAYMENT_WALLETS[0];
                   return (
                     <div
                       key={item.id}
                       className="flex items-center justify-between p-2.5 rounded-xl border dark:bg-[#0b0b0e] bg-white border-black/10 dark:border-white/10 text-xs"
                     >
                       <div className="min-w-0 flex-1">
-                        <div className="flex items-center gap-1.5">
+                        <div className="flex items-center gap-1.5 flex-wrap">
                           <span
                             className={`px-1.5 py-0.2 text-[9px] font-black uppercase rounded ${
                               isAssign
@@ -384,6 +588,10 @@ export function ReserveDetailModal({
                           >
                             {isAssign ? 'Aporte' : isConsume ? 'Consumo' : 'Liberado'}
                           </span>
+                          <span className="px-1.5 py-0.5 text-[10px] font-bold rounded bg-black/5 dark:bg-white/10 text-muted flex items-center gap-1">
+                            <span>{itemWallet.icon}</span>
+                            <span>{itemWallet.label}</span>
+                          </span>
                           <span className="font-semibold text-main truncate">
                             {item.note || 'Movimiento de reserva'}
                           </span>
@@ -394,7 +602,7 @@ export function ReserveDetailModal({
                       </div>
 
                       <span
-                        className={`font-num font-black text-xs ${
+                        className={`font-num font-black text-xs ml-2 ${
                           isAssign
                             ? 'text-[#087f48] dark:text-[#00ff87]'
                             : 'text-[#d9183b] dark:text-[#ff2e93]'
